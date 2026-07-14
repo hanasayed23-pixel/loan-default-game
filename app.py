@@ -1,8 +1,10 @@
 import csv
 import os
 import random
+import smtplib
 import uuid
 from datetime import datetime
+from email.message import EmailMessage
 
 from flask import Flask, redirect, render_template, request, session, url_for
 from jinja2 import DictLoader
@@ -16,6 +18,14 @@ app.secret_key = os.environ.get("SECRET_KEY", "loan-default-game-dev-secret-key"
 DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 CSV_PATH = os.path.join(DATA_DIR, "sessions.csv")
+
+# Session-result email (Gmail SMTP). The app password is never hardcoded --
+# set the EMAIL_APP_PASSWORD environment variable to enable sending.
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_SENDER = "hannahmohamed.sayed23@gmail.com"
+EMAIL_RECIPIENT = "hannahmohamed.sayed23@gmail.com"
+EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 
 # ---------------------------------------------------------------------------
 # Case data (real cases supplied by the user)
@@ -498,13 +508,30 @@ app.jinja_env.loader = DictLoader({
 })
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_decisions(decisions, lang):
+    return [
+        {
+            "business_type": CASES_BY_ID[d["case_id"]]["business_type"][lang],
+            "decision": d["decision"],
+            "outcome": d["outcome"],
+            "delta": d["delta"],
+        }
+        for d in decisions
+    ]
+
+
+# ---------------------------------------------------------------------------
 # CSV logging
 # ---------------------------------------------------------------------------
 
 
 def save_session_to_csv():
-    decisions = session.get("decisions", [])
     lang = session.get("lang", "en")
+    resolved = resolve_decisions(session.get("decisions", []), lang)
     fieldnames = ["timestamp", "session_id", "language", "total_score"]
     for i in range(1, len(CASES) + 1):
         fieldnames += [
@@ -521,8 +548,8 @@ def save_session_to_csv():
         "language": lang,
         "total_score": session.get("score", 0),
     }
-    for i, d in enumerate(decisions, start=1):
-        row[f"case{i}_business_type"] = CASES_BY_ID[d["case_id"]]["business_type"][lang]
+    for i, d in enumerate(resolved, start=1):
+        row[f"case{i}_business_type"] = d["business_type"]
         row[f"case{i}_decision"] = d["decision"]
         row[f"case{i}_outcome"] = d["outcome"]
         row[f"case{i}_points"] = d["delta"]
@@ -532,6 +559,43 @@ def save_session_to_csv():
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# Email notification
+# ---------------------------------------------------------------------------
+
+
+def send_session_email(lang, score, session_id, resolved_decisions):
+    if not EMAIL_APP_PASSWORD:
+        app.logger.warning("EMAIL_APP_PASSWORD not set; skipping session result email.")
+        return
+
+    lines = [
+        f"Language: {lang}",
+        f"Session ID: {session_id}",
+        f"Total score: {score}",
+        "",
+        "Decisions:",
+    ]
+    for i, d in enumerate(resolved_decisions, start=1):
+        lines.append(
+            f"{i}. {d['business_type']} - {d['decision']} - {d['outcome']} - {d['delta']:+d}"
+        )
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Loan Default Game session result - score {score}"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = EMAIL_RECIPIENT
+    msg.set_content("\n".join(lines))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
+            server.send_message(msg)
+    except Exception:
+        app.logger.exception("Failed to send session result email")
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +704,12 @@ def next_case():
     session["index"] = session.get("index", 0) + 1
     if session["index"] >= len(CASES):
         save_session_to_csv()
+        send_session_email(
+            lang,
+            session.get("score", 0),
+            session.get("session_id", ""),
+            resolve_decisions(session.get("decisions", []), lang),
+        )
         return redirect(url_for("final"))
     return redirect(url_for("show_case"))
 
@@ -652,19 +722,10 @@ def final():
     decisions = session.get("decisions", [])
     if len(decisions) < len(CASES):
         return redirect(url_for("show_case"))
-    enriched = [
-        {
-            "business_type": CASES_BY_ID[d["case_id"]]["business_type"][lang],
-            "decision": d["decision"],
-            "outcome": d["outcome"],
-            "delta": d["delta"],
-        }
-        for d in decisions
-    ]
     return render_template(
         "final.html",
         lang=lang,
-        decisions=enriched,
+        decisions=resolve_decisions(decisions, lang),
         score=session.get("score", 0),
     )
 
