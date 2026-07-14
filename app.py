@@ -1,11 +1,10 @@
 import csv
 import os
 import random
-import smtplib
 import uuid
 from datetime import datetime
-from email.message import EmailMessage
 
+import requests
 from flask import Flask, redirect, render_template, request, session, url_for
 from jinja2 import DictLoader
 
@@ -19,13 +18,13 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__))
 os.makedirs(DATA_DIR, exist_ok=True)
 CSV_PATH = os.path.join(DATA_DIR, "sessions.csv")
 
-# Session-result email (Gmail SMTP). The app password is never hardcoded --
-# set the EMAIL_APP_PASSWORD environment variable to enable sending.
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_SENDER = "hannahmohamed.sayed23@gmail.com"
+# Session-result email (Resend API, since Render's free tier blocks outbound
+# SMTP but allows HTTPS). The API key is never hardcoded -- set the
+# RESEND_API_KEY environment variable to enable sending.
+RESEND_API_URL = "https://api.resend.com/emails"
+EMAIL_SENDER = "onboarding@resend.dev"
 EMAIL_RECIPIENT = "hannahmohamed.sayed23@gmail.com"
-EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
 # ---------------------------------------------------------------------------
 # Case data (real cases supplied by the user)
@@ -567,8 +566,8 @@ def save_session_to_csv():
 
 
 def send_session_email(lang, score, session_id, resolved_decisions):
-    if not EMAIL_APP_PASSWORD:
-        app.logger.warning("EMAIL_APP_PASSWORD not set; skipping session result email.")
+    if not RESEND_API_KEY:
+        app.logger.warning("RESEND_API_KEY not set; skipping session result email.")
         return
 
     lines = [
@@ -583,18 +582,23 @@ def send_session_email(lang, score, session_id, resolved_decisions):
             f"{i}. {d['business_type']} - {d['decision']} - {d['outcome']} - {d['delta']:+d}"
         )
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Loan Default Game session result - score {score}"
-    msg["From"] = EMAIL_SENDER
-    msg["To"] = EMAIL_RECIPIENT
-    msg.set_content("\n".join(lines))
-
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-            server.send_message(msg)
-    except Exception:
+        response = requests.post(
+            RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_SENDER,
+                "to": [EMAIL_RECIPIENT],
+                "subject": f"Loan Default Game session result - score {score}",
+                "text": "\n".join(lines),
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
         app.logger.exception("Failed to send session result email")
 
 
