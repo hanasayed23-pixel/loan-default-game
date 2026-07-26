@@ -253,6 +253,15 @@ TRANSLATIONS = {
         "won": "KRW",
         "out_of": "out of",
         "reason_question": "What was the single most important factor in your decision?",
+        "glossary_title": "What do these mean?",
+        "glossary_risk_grade": "A rating of the applicant's past repayment history (higher = more reliable past behavior)",
+        "glossary_experience": "How long the applicant has run their business",
+        "glossary_monthly_income": "The applicant's reported monthly earnings",
+        "glossary_guarantor": "How close/trusted the person backing the loan is to the applicant",
+        "glossary_field_investigation": "What the bank's own visit found about the applicant's reputation and business location",
+        "glossary_beneficiary": "Whether someone else benefits from the loan besides the applicant",
+        "glossary_literacy": "Whether the applicant can read and write",
+        "glossary_credit_limit": "Credit limit: The percentage of the applicant's credit limit already used by other loans. The installment shown next to it is what they currently pay toward those loans — this should be subtracted from their income to see what they can actually afford for a new loan.",
     },
     "ar": {
         "title": "لعبة تعثر السداد",
@@ -289,6 +298,15 @@ TRANSLATIONS = {
         "won": "وون",
         "out_of": "من أصل",
         "reason_question": "إيه أهم عامل أثر في قرارك؟",
+        "glossary_title": "الكلمات دي معناها إيه؟",
+        "glossary_risk_grade": "تقييم لسجل سداد العميل في الماضي (كل ما تكون أعلى، كل ما يبقى سجله أفضل)",
+        "glossary_experience": "من إمتى وهو شغال في مشروعه",
+        "glossary_monthly_income": "دخل العميل المُصرَّح بيه شهريًا",
+        "glossary_guarantor": "مدى قرب/ثقة الشخص الضامن للقرض من العميل",
+        "glossary_field_investigation": "اللي البنك لقاه بنفسه من زيارة سمعة العميل ومكان مشروعه",
+        "glossary_beneficiary": "هل فيه حد تاني بيستفيد من القرض غير العميل نفسه",
+        "glossary_literacy": "هل العميل يعرف يقرأ ويكتب",
+        "glossary_credit_limit": "حد الائتمان: نسبة حد الائتمان اللي العميل مستخدمها بالفعل في قروض تانية. القسط اللي جنبها هو اللي بيدفعه حاليًا في القروض دي — والمفروض يتخصم من دخله الشهري عشان تعرفي فعليًا قد إيه هو قادر يسدد لو أخد قرض جديد.",
     },
 }
 
@@ -314,6 +332,11 @@ REASON_OPTIONS = [
     },
     {"id": "beneficiary", "en": "Existence of a third-party beneficiary", "ar": "وجود مستفيد من الغير"},
     {"id": "literacy", "en": "Literacy", "ar": "محو الأمية"},
+    {
+        "id": "credit_limit",
+        "en": "Credit utilization and existing loan installments",
+        "ar": "نسبة استخدام الائتمان وقسط القروض التانية",
+    },
 ]
 REASON_IDS = {opt["id"] for opt in REASON_OPTIONS}
 
@@ -394,6 +417,11 @@ BASE_HTML = """
   .reason-option { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 14px; cursor: pointer; }
   .reason-option input { width: 18px; height: 18px; accent-color: var(--accent); }
   .reason-option span { font-size: 1rem; }
+  .glossary { margin: 4px 0 20px; }
+  .glossary summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: .92rem; user-select: none; }
+  .glossary ul { margin: 10px 0 0; padding-inline-start: 18px; }
+  .glossary li { margin-bottom: 6px; font-size: .88rem; color: var(--muted); }
+  .glossary li strong { color: var(--text); }
 </style>
 </head>
 <body>
@@ -433,6 +461,19 @@ CASE_HTML = """
 <div class="card">
   <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }}</h2>
   <h1>{{ case.business_type[lang] }}</h1>
+  <details class="glossary">
+    <summary>{{ t('glossary_title') }}</summary>
+    <ul>
+      <li>{{ t('glossary_credit_limit') }}</li>
+      <li><strong>{{ t('risk_grade') }}:</strong> {{ t('glossary_risk_grade') }}</li>
+      <li><strong>{{ t('experience') }}:</strong> {{ t('glossary_experience') }}</li>
+      <li><strong>{{ t('monthly_income') }}:</strong> {{ t('glossary_monthly_income') }}</li>
+      <li><strong>{{ t('guarantor') }}:</strong> {{ t('glossary_guarantor') }}</li>
+      <li><strong>{{ t('field_investigation') }}:</strong> {{ t('glossary_field_investigation') }}</li>
+      <li><strong>{{ t('beneficiary') }}:</strong> {{ t('glossary_beneficiary') }}</li>
+      <li><strong>{{ t('literacy') }}:</strong> {{ t('glossary_literacy') }}</li>
+    </ul>
+  </details>
   <div class="grid">
     <div>
       <div class="field-label">{{ t('loan_amount') }}</div>
