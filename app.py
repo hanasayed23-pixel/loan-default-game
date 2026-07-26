@@ -249,6 +249,10 @@ TRANSLATIONS = {
         "final_title": "Game Over",
         "summary": "Summary",
         "play_again": "Play Again",
+        "total_earned": "Total earned",
+        "won": "KRW",
+        "out_of": "out of",
+        "reason_question": "What was the single most important factor in your decision?",
     },
     "ar": {
         "title": "لعبة تعثر السداد",
@@ -281,6 +285,10 @@ TRANSLATIONS = {
         "final_title": "خلصت اللعبة",
         "summary": "ملخص",
         "play_again": "العب تاني",
+        "total_earned": "إجمالي المكسب",
+        "won": "وون",
+        "out_of": "من أصل",
+        "reason_question": "إيه أهم عامل أثر في قرارك؟",
     },
 }
 
@@ -292,6 +300,31 @@ SCORE_MATRIX = {
     ("reject", "repay"): -50,
     ("reject", "default"): 50,
 }
+
+# Reason options shown after each decision, before the outcome is revealed.
+REASON_OPTIONS = [
+    {"id": "credit_score", "en": "Credit score", "ar": "التصنيف الائتماني"},
+    {"id": "experience", "en": "Years of business experience", "ar": "سنين الخبرة في النشاط"},
+    {"id": "monthly_income", "en": "Monthly income", "ar": "الدخل الشهري"},
+    {"id": "guarantor", "en": "Guarantor relationship", "ar": "علاقة الضامن"},
+    {
+        "id": "field_investigation",
+        "en": "Field investigation notes (reputation/location)",
+        "ar": "تقرير المعاينة الميدانية (السمعة/الموقع)",
+    },
+    {"id": "beneficiary", "en": "Existence of a third-party beneficiary", "ar": "وجود مستفيد من الغير"},
+    {"id": "literacy", "en": "Literacy", "ar": "محو الأمية"},
+]
+REASON_IDS = {opt["id"] for opt in REASON_OPTIONS}
+
+
+def points_to_krw(points):
+    # Maps -100 -> 0 KRW and +100 -> 1250 KRW, so 8 max-score cases total 10,000 KRW.
+    return round(1250 * (points + 100) / 200)
+
+
+def total_krw_earned(decisions):
+    return sum(d.get("krw", 0) for d in decisions)
 
 
 def t(key):
@@ -354,7 +387,13 @@ BASE_HTML = """
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--card-border); text-align: {{ 'right' if lang == 'ar' else 'left' }}; font-size: .92rem; }
   .lang-row { display: flex; gap: 16px; margin-top: 24px; }
   .final-score { font-size: 2.6rem; font-weight: 800; text-align: center; margin: 16px 0; }
+  .final-out-of { text-align: center; margin-top: -10px; }
   .muted { color: var(--muted); }
+  .score-line { font-size: .85rem; }
+  .reason-options { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+  .reason-option { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+  .reason-option input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .reason-option span { font-size: 1rem; }
 </style>
 </head>
 <body>
@@ -388,7 +427,7 @@ CASE_HTML = """
 {% block body %}
 <div class="topbar">
   <div class="title">{{ t('title') }}</div>
-  <div class="score-badge">{{ t('score') }}: {{ score }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
 </div>
 <div class="progress"><div class="progress-fill" style="width: {{ (index / total * 100) | round(1) }}%;"></div></div>
 <div class="card">
@@ -440,12 +479,37 @@ CASE_HTML = """
 {% endblock %}
 """
 
+REASON_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
+</div>
+<div class="card">
+  <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }} &mdash; {{ business_type }}</h2>
+  <h1>{{ t('reason_question') }}</h1>
+  <form method="post" action="{{ url_for('submit_reason') }}">
+    <div class="reason-options">
+      {% for opt in reason_options %}
+      <label class="reason-option">
+        <input type="radio" name="reason" value="{{ opt.id }}" required>
+        <span>{{ opt.label }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-continue" style="width: 100%; margin-top: 20px;">{{ t('continue') }}</button>
+  </form>
+</div>
+{% endblock %}
+"""
+
 OUTCOME_HTML = """
 {% extends 'base.html' %}
 {% block body %}
 <div class="topbar">
   <div class="title">{{ t('title') }}</div>
-  <div class="score-badge">{{ t('score') }}: {{ score }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
 </div>
 <div class="card">
   <h2 class="muted">{{ t('case_label').format(n=result.index + 1, total=total) }} &mdash; {{ business_type }}</h2>
@@ -469,7 +533,8 @@ FINAL_HTML = """
 </div>
 <div class="card">
   <h1>{{ t('final_title') }}</h1>
-  <div class="final-score">{{ score }}</div>
+  <div class="final-score">{{ total_krw }} {{ t('won') }}</div>
+  <p class="muted final-out-of">{{ t('out_of') }} 10,000 {{ t('won') }}</p>
   <h2>{{ t('summary') }}</h2>
   <table>
     <tr>
@@ -502,6 +567,7 @@ app.jinja_env.loader = DictLoader({
     "base.html": BASE_HTML,
     "language.html": LANGUAGE_HTML,
     "case.html": CASE_HTML,
+    "reason.html": REASON_HTML,
     "outcome.html": OUTCOME_HTML,
     "final.html": FINAL_HTML,
 })
@@ -518,6 +584,8 @@ def resolve_decisions(decisions, lang):
             "decision": d["decision"],
             "outcome": d["outcome"],
             "delta": d["delta"],
+            "krw": d.get("krw", 0),
+            "reason": d.get("reason", ""),
         }
         for d in decisions
     ]
@@ -531,13 +599,15 @@ def resolve_decisions(decisions, lang):
 def save_session_to_csv():
     lang = session.get("lang", "en")
     resolved = resolve_decisions(session.get("decisions", []), lang)
-    fieldnames = ["timestamp", "session_id", "language", "total_score"]
+    fieldnames = ["timestamp", "session_id", "language", "total_score", "total_krw"]
     for i in range(1, len(CASES) + 1):
         fieldnames += [
             f"case{i}_business_type",
             f"case{i}_decision",
             f"case{i}_outcome",
             f"case{i}_points",
+            f"case{i}_krw",
+            f"case{i}_reason",
         ]
 
     file_exists = os.path.isfile(CSV_PATH)
@@ -546,12 +616,15 @@ def save_session_to_csv():
         "session_id": session.get("session_id", ""),
         "language": lang,
         "total_score": session.get("score", 0),
+        "total_krw": total_krw_earned(session.get("decisions", [])),
     }
     for i, d in enumerate(resolved, start=1):
         row[f"case{i}_business_type"] = d["business_type"]
         row[f"case{i}_decision"] = d["decision"]
         row[f"case{i}_outcome"] = d["outcome"]
         row[f"case{i}_points"] = d["delta"]
+        row[f"case{i}_krw"] = d["krw"]
+        row[f"case{i}_reason"] = d["reason"]
 
     with open(CSV_PATH, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -565,7 +638,7 @@ def save_session_to_csv():
 # ---------------------------------------------------------------------------
 
 
-def send_session_email(lang, score, session_id, resolved_decisions):
+def send_session_email(lang, score, total_krw, session_id, resolved_decisions):
     if not RESEND_API_KEY:
         app.logger.warning("RESEND_API_KEY not set; skipping session result email.")
         return
@@ -574,12 +647,14 @@ def send_session_email(lang, score, session_id, resolved_decisions):
         f"Language: {lang}",
         f"Session ID: {session_id}",
         f"Total score: {score}",
+        f"Total KRW earned: {total_krw} / 10000",
         "",
         "Decisions:",
     ]
     for i, d in enumerate(resolved_decisions, start=1):
         lines.append(
-            f"{i}. {d['business_type']} - {d['decision']} - {d['outcome']} - {d['delta']:+d}"
+            f"{i}. {d['business_type']} - {d['decision']} - {d['outcome']} - {d['delta']:+d} "
+            f"({d['krw']} KRW) - reason: {d['reason']}"
         )
 
     try:
@@ -592,7 +667,7 @@ def send_session_email(lang, score, session_id, resolved_decisions):
             json={
                 "from": EMAIL_SENDER,
                 "to": [EMAIL_RECIPIENT],
-                "subject": f"Loan Default Game session result - score {score}",
+                "subject": f"Loan Default Game session result - {total_krw} KRW (score {score})",
                 "text": "\n".join(lines),
             },
             timeout=10,
@@ -644,6 +719,7 @@ def show_case():
         index=index,
         total=len(CASES),
         score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
     )
 
 
@@ -663,6 +739,7 @@ def decide():
     case = CASES[index]
     outcome = session["outcomes"][index]
     delta = SCORE_MATRIX[(decision, outcome)]
+    krw = points_to_krw(delta)
 
     session["score"] = session.get("score", 0) + delta
 
@@ -672,12 +749,56 @@ def decide():
         "decision": decision,
         "outcome": outcome,
         "delta": delta,
+        "krw": krw,
+        "reason": None,
     }
     decisions.append(entry)
     session["decisions"] = decisions
 
     result = dict(entry)
     result["index"] = index
+    session["last_result"] = result
+
+    return redirect(url_for("show_reason"))
+
+
+@app.route("/reason")
+def show_reason():
+    lang = session.get("lang")
+    result = session.get("last_result")
+    if not lang or not result:
+        return redirect(url_for("index"))
+    business_type = CASES_BY_ID[result["case_id"]]["business_type"][lang]
+    reason_options = [{"id": opt["id"], "label": opt[lang]} for opt in REASON_OPTIONS]
+    return render_template(
+        "reason.html",
+        lang=lang,
+        index=result["index"],
+        business_type=business_type,
+        total=len(CASES),
+        score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
+        reason_options=reason_options,
+    )
+
+
+@app.route("/reason", methods=["POST"])
+def submit_reason():
+    lang = session.get("lang")
+    result = session.get("last_result")
+    if not lang or not result:
+        return redirect(url_for("index"))
+
+    reason = request.form.get("reason")
+    if reason not in REASON_IDS:
+        return redirect(url_for("show_reason"))
+
+    decisions = session.get("decisions", [])
+    if decisions:
+        decisions[-1]["reason"] = reason
+        session["decisions"] = decisions
+
+    result["reason"] = reason
     session["last_result"] = result
 
     return redirect(url_for("show_outcome"))
@@ -689,6 +810,8 @@ def show_outcome():
     result = session.get("last_result")
     if not lang or not result:
         return redirect(url_for("index"))
+    if not result.get("reason"):
+        return redirect(url_for("show_reason"))
     business_type = CASES_BY_ID[result["case_id"]]["business_type"][lang]
     return render_template(
         "outcome.html",
@@ -697,6 +820,7 @@ def show_outcome():
         business_type=business_type,
         total=len(CASES),
         score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
     )
 
 
@@ -711,6 +835,7 @@ def next_case():
         send_session_email(
             lang,
             session.get("score", 0),
+            total_krw_earned(session.get("decisions", [])),
             session.get("session_id", ""),
             resolve_decisions(session.get("decisions", []), lang),
         )
@@ -731,6 +856,7 @@ def final():
         lang=lang,
         decisions=resolve_decisions(decisions, lang),
         score=session.get("score", 0),
+        total_krw=total_krw_earned(decisions),
     )
 
 
