@@ -27,191 +27,79 @@ EMAIL_RECIPIENT = "hannahmohamed.sayed23@gmail.com"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
 # ---------------------------------------------------------------------------
-# Case data (real cases supplied by the user)
+# Case data: 2 (credit score) x 5 (situation) factorial design = 10 cases.
+# Loan amount, experience, income, guarantor, field investigation, literacy,
+# and beneficiary are identical across every case by design -- only the
+# credit score level and the situation narrative vary.
 # ---------------------------------------------------------------------------
 
-CASES = [
+FIXED_FIELDS = {
+    "loan_amount": 100000,
+    "experience_years": 5,
+    "monthly_income": {"en": "4,000 EGP", "ar": "٤,٠٠٠ جنيه"},
+    "guarantor": {"en": "Brother", "ar": "الأخ"},
+    "field_investigation": {
+        "en": "Normal reputation, no negative remarks",
+        "ar": "سمعة عادية، مفيش ملاحظات سلبية",
+    },
+    "literacy": {"en": "Can read and write", "ar": "يقرأ ويكتب"},
+    "beneficiary": {"en": "No", "ar": "لا"},
+}
+
+# Hidden default probabilities per situation x credit score level. Never
+# shown to the player -- only used to determine the post-decision outcome.
+SITUATIONS = [
     {
-        "id": 1,
-        "business_type": {"en": "Hair salon", "ar": "صالون حلاقة"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 25,
-        "credit_limit_note": {
-            "en": "Has another 5,000 EGP loan, paying 450 EGP/month, current",
-            "ar": "عنده قرض تاني ٥,٠٠٠ جنيه، بيسدد ٤٥٠ جنيه في الشهر ومنتظم في السداد",
-        },
-        "risk_grade": {"en": "Excellent", "ar": "ممتاز"},
-        "experience_years": 6,
-        "monthly_income": {"en": "5,000 EGP", "ar": "٥,٠٠٠ جنيه"},
-        "beneficiary": {"en": "No third-party beneficiary", "ar": "مفيش مستفيد من الغير"},
-        "field_investigation": {
-            "en": "Good reputation, easy-to-reach location",
-            "ar": "سمعته كويسة والمكان سهل الوصول له",
-        },
-        "guarantor": {"en": "Distant relation", "ar": "قريب بعيد"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.90,
+        "type": "neutral",
+        "en": "Grocery store owner, looking to restock inventory.",
+        "ar": "صاحب محل بقالة، عايز يجدد المخزون بتاع المحل.",
+        "default_high": 0.15,
+        "default_low": 0.35,
     },
     {
-        "id": 2,
-        "business_type": {"en": "Grocery store", "ar": "بقالة"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 20,
-        "credit_limit_note": {
-            "en": "No other loans",
-            "ar": "مفيش قروض تانية",
-        },
-        "risk_grade": {"en": "Excellent", "ar": "ممتاز"},
-        "experience_years": 8,
-        "monthly_income": {"en": "7,000 EGP", "ar": "٧,٠٠٠ جنيه"},
-        "beneficiary": {"en": "No third-party beneficiary", "ar": "مفيش مستفيد من الغير"},
-        "field_investigation": {
-            "en": "Excellent reputation, main street location",
-            "ar": "سمعة ممتازة والمحل على شارع رئيسي",
-        },
-        "guarantor": {"en": "Neighbor (female)", "ar": "جارته"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.95,
+        "type": "legal_judgment",
+        "en": "Carpentry workshop owner. Has an outstanding court judgment for an unpaid debt to a wood supplier.",
+        "ar": "صاحب ورشة نجارة. عليه حكم قضائي بسبب دين متأخر لمورد خشب.",
+        "default_high": 0.40,
+        "default_low": 0.60,
     },
     {
-        "id": 3,
-        "business_type": {"en": "New clothing shop", "ar": "محل ملابس جديد"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 28,
-        "credit_limit_note": {
-            "en": "No other loans",
-            "ar": "مفيش قروض تانية",
-        },
-        "risk_grade": {"en": "Excellent", "ar": "ممتاز"},
-        "experience_years": 0,
-        "monthly_income": {"en": "Not established (new business)", "ar": "مش محدد لسه (نشاط جديد)"},
-        "beneficiary": {
-            "en": "Has third-party beneficiary (brother manages the capital)",
-            "ar": "فيه مستفيد من الغير (أخوه هو اللي بيدير رأس المال)",
-        },
-        "field_investigation": {
-            "en": "Unknown reputation, remote area",
-            "ar": "سمعته مش معروفة والمنطقة بعيدة",
-        },
-        "guarantor": {"en": "No guarantor", "ar": "مفيش ضامن"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.30,
+        "type": "sick_child",
+        "en": "Clothing shop owner. Her son needs urgent surgery, and part of the loan will go toward his treatment.",
+        "ar": "صاحبة محل ملابس. ابنها محتاج عملية عاجلة، وجزء من القرض هيتصرف على العلاج.",
+        "default_high": 0.25,
+        "default_low": 0.45,
     },
     {
-        "id": 4,
-        "business_type": {"en": "Tailoring workshop", "ar": "ورشة خياطة"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 90,
-        "credit_limit_note": {
-            "en": "Has a 5,000 EGP loan, 450 EGP/month, multiple late payments",
-            "ar": "عنده قرض ٥,٠٠٠ جنيه بيسدد ٤٥٠ جنيه شهريًا لكن اتأخر في السداد أكتر من مرة",
-        },
-        "risk_grade": {"en": "Poor", "ar": "ضعيف"},
-        "experience_years": 9,
-        "monthly_income": {"en": "6,000 EGP", "ar": "٦,٠٠٠ جنيه"},
-        "beneficiary": {"en": "No third-party beneficiary", "ar": "مفيش مستفيد من الغير"},
-        "field_investigation": {
-            "en": "Very good reputation, known for seasonal work, easy to reach",
-            "ar": "سمعة كويسة جدًا ومعروف بشغل موسمي والمكان سهل الوصول له",
-        },
-        "guarantor": {"en": "Neighbor (female)", "ar": "جارته"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.55,
+        "type": "expansion",
+        "en": "Bakery owner. The business has grown steadily over the past year, and he wants to open a second branch.",
+        "ar": "صاحب مخبز. المشروع بينمو بثبات من سنة، وعايز يفتح فرع تاني.",
+        "default_high": 0.05,
+        "default_low": 0.25,
     },
     {
-        "id": 5,
-        "business_type": {"en": "Cigarette kiosk", "ar": "كشك سجاير"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 95,
-        "credit_limit_note": {
-            "en": "Has a 5,000 EGP loan, multiple late payments",
-            "ar": "عنده قرض ٥,٠٠٠ جنيه واتأخر في السداد أكتر من مرة",
-        },
-        "risk_grade": {"en": "Poor", "ar": "ضعيف"},
-        "experience_years": 0,
-        "monthly_income": {"en": "Not established (new business)", "ar": "مش محدد لسه (نشاط جديد)"},
-        "beneficiary": {
-            "en": "Has third-party beneficiary (a relative asked him to take the loan to pay off a personal debt)",
-            "ar": "فيه مستفيد من الغير (قريبه طلب منه ياخد القرض عشان يسدد بيه دين شخصي)",
-        },
-        "field_investigation": {
-            "en": "Unknown reputation, unsafe remote area",
-            "ar": "سمعته مش معروفة والمنطقة بعيدة وغير آمنة",
-        },
-        "guarantor": {"en": "No guarantor", "ar": "مفيش ضامن"},
-        "literacy": {
-            "en": "Illiterate (uses a stamp instead of a signature)",
-            "ar": "أُمّي (بيستخدم ختم بدل الإمضاء)",
-        },
-        "repay_probability": 0.10,
-    },
-    {
-        "id": 6,
-        "business_type": {"en": "Gas station", "ar": "محطة بنزين"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 20,
-        "credit_limit_note": {
-            "en": "No other loans",
-            "ar": "مفيش قروض تانية",
-        },
-        "risk_grade": {"en": "Excellent", "ar": "ممتاز"},
-        "experience_years": 10,
-        "monthly_income": {"en": "9,000 EGP", "ar": "٩,٠٠٠ جنيه"},
-        "beneficiary": {"en": "No third-party beneficiary", "ar": "مفيش مستفيد من الغير"},
-        "field_investigation": {
-            "en": "Excellent reputation, main road location",
-            "ar": "سمعة ممتازة والمحل على طريق رئيسي",
-        },
-        "guarantor": {"en": "Distant relation", "ar": "قريب بعيد"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.95,
-    },
-    {
-        "id": 7,
-        "business_type": {"en": "Women's clothing / abaya shop", "ar": "محل عبايات وملابس حريمي"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 30,
-        "credit_limit_note": {
-            "en": "No other loans",
-            "ar": "مفيش قروض تانية",
-        },
-        "risk_grade": {"en": "Excellent", "ar": "ممتاز"},
-        "experience_years": 0,
-        "monthly_income": {"en": "Not established (new business)", "ar": "مش محدد لسه (نشاط جديد)"},
-        "beneficiary": {
-            "en": "Has third-party beneficiary (husband manages the money)",
-            "ar": "فيه مستفيد من الغير (جوزها هو اللي بيدير الفلوس)",
-        },
-        "field_investigation": {
-            "en": "Unknown reputation, remote area",
-            "ar": "سمعته مش معروفة والمنطقة بعيدة",
-        },
-        "guarantor": {"en": "No guarantor", "ar": "مفيش ضامن"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.30,
-    },
-    {
-        "id": 8,
-        "business_type": {"en": "Auto repair workshop", "ar": "ورشة تصليح عربيات"},
-        "loan_amount": 100000,
-        "credit_limit_pct": 85,
-        "credit_limit_note": {
-            "en": "Has a 5,000 EGP loan, 450 EGP/month, current with minor delays",
-            "ar": "عنده قرض ٥,٠٠٠ جنيه بيسدد ٤٥٠ جنيه شهريًا ومنتظم مع تأخير بسيط أحيانًا",
-        },
-        "risk_grade": {"en": "Poor", "ar": "ضعيف"},
-        "experience_years": 12,
-        "monthly_income": {"en": "8,000 EGP", "ar": "٨,٠٠٠ جنيه"},
-        "beneficiary": {"en": "No third-party beneficiary", "ar": "مفيش مستفيد من الغير"},
-        "field_investigation": {
-            "en": "Very strong reputation, established clientele, busy area",
-            "ar": "سمعة قوية جدًا وعنده زباين ثابتين والمنطقة حيوية",
-        },
-        "guarantor": {"en": "Friend (male)", "ar": "صاحبه"},
-        "literacy": {"en": "Literate", "ar": "يعرف يقرا ويكتب"},
-        "repay_probability": 0.55,
+        "type": "family_obligation",
+        "en": "Hair salon owner. She needs part of the loan to cover her daughter's upcoming wedding expenses next month.",
+        "ar": "صاحبة صالون تصفيف شعر. محتاجة جزء من القرض عشان تجهيز جواز بنتها الشهر الجاي.",
+        "default_high": 0.20,
+        "default_low": 0.40,
     },
 ]
+
+CASES = []
+_case_id = 1
+for _situation in SITUATIONS:
+    for _level in ("high", "low"):
+        _default_prob = _situation[f"default_{_level}"]
+        CASES.append({
+            **FIXED_FIELDS,
+            "id": _case_id,
+            "situation_type": _situation["type"],
+            "situation": {"en": _situation["en"], "ar": _situation["ar"]},
+            "credit_score_level": _level,
+            "repay_probability": 1 - _default_prob,
+        })
+        _case_id += 1
 
 # ---------------------------------------------------------------------------
 # Translations
@@ -223,17 +111,17 @@ TRANSLATIONS = {
         "case_label": "Case {n} of {total}",
         "loan_amount": "Loan Amount",
         "egp": "EGP",
-        "credit_limit": "Credit Limit Utilization",
-        "risk_grade": "Risk Grade",
+        "credit_score": "Credit Score",
+        "credit_score_high": "High",
+        "credit_score_low": "Low",
         "experience": "Years of Experience",
         "years_suffix": "years",
-        "first_business": "First-time business (0 years experience)",
         "monthly_income": "Monthly Income",
         "beneficiary": "Third-party Beneficiary",
         "field_investigation": "Field Investigation",
         "guarantor": "Guarantor",
         "literacy": "Literacy",
-        "business_type": "Business Type",
+        "case_column": "Case",
         "approve": "Approve Loan",
         "reject": "Reject Loan",
         "score": "Score",
@@ -254,31 +142,30 @@ TRANSLATIONS = {
         "out_of": "out of",
         "reason_question": "What was the single most important factor in your decision?",
         "glossary_title": "What do these mean?",
-        "glossary_risk_grade": "A rating of the applicant's past repayment history (higher = more reliable past behavior) — \"Excellent\" means lower default risk, \"Poor\" means higher default risk.",
-        "glossary_experience": "How long the applicant has run their business. Under ~6 years is a weaker signal, linked to higher default risk in this game's design; 8+ years signals lower risk.",
-        "glossary_monthly_income": "The applicant's reported monthly earnings",
-        "glossary_guarantor": "How close/trusted the person backing the loan is to the applicant. A spouse guarantor is linked to higher default risk than a sibling or neighbor guarantor, in this game's design.",
-        "glossary_field_investigation": "What the bank's own visit found about the applicant's reputation and business location. A good reputation in the applicant's area signals they're more likely to repay.",
-        "glossary_beneficiary": "Whether someone else benefits from the loan besides the applicant. If someone other than the applicant benefits from the loan, this is linked to higher default risk.",
-        "glossary_literacy": "Whether the applicant can read and write. An illiterate applicant is linked to higher default risk, in this game's design.",
-        "glossary_credit_limit": "Credit limit: The percentage of the applicant's credit limit already used by other loans. The installment shown next to it is what they currently pay toward those loans — this should be subtracted from their income to see what they can actually afford for a new loan.",
+        "glossary_credit_score": "Credit score: A simple High/Low rating of the applicant's past repayment reliability — High means lower default risk, Low means higher default risk.",
+        "glossary_experience": "How long the applicant has run their business.",
+        "glossary_monthly_income": "The applicant's reported monthly earnings.",
+        "glossary_guarantor": "How close/trusted the person backing the loan is to the applicant.",
+        "glossary_field_investigation": "What the bank's own visit found about the applicant's reputation and business location.",
+        "glossary_beneficiary": "Whether someone else benefits from the loan besides the applicant.",
+        "glossary_literacy": "Whether the applicant can read and write.",
     },
     "ar": {
         "title": "لعبة تعثر السداد",
         "case_label": "الحالة {n} من {total}",
         "loan_amount": "مبلغ القرض",
         "egp": "جنيه",
-        "credit_limit": "نسبة استخدام السقف الائتماني",
-        "risk_grade": "تصنيف المخاطر",
+        "credit_score": "الدرجة الائتمانية",
+        "credit_score_high": "مرتفعة",
+        "credit_score_low": "منخفضة",
         "experience": "سنوات الخبرة",
         "years_suffix": "سنين",
-        "first_business": "نشاط جديد (٠ سنين خبرة)",
         "monthly_income": "الدخل الشهري",
         "beneficiary": "مستفيد من الغير",
         "field_investigation": "تقرير المعاينة الميدانية",
         "guarantor": "الضامن",
         "literacy": "محو الأمية",
-        "business_type": "نوع النشاط",
+        "case_column": "الحالة",
         "approve": "موافقة على القرض",
         "reject": "رفض القرض",
         "score": "النقط",
@@ -299,14 +186,13 @@ TRANSLATIONS = {
         "out_of": "من أصل",
         "reason_question": "إيه أهم عامل أثر في قرارك؟",
         "glossary_title": "الكلمات دي معناها إيه؟",
-        "glossary_risk_grade": "تقييم لسجل سداد العميل في الماضي (كل ما تكون أعلى، كل ما يبقى سجله أفضل) — \"ممتاز\" يعني احتمال تعثر أقل، \"ضعيف\" يعني احتمال تعثر أعلى.",
-        "glossary_experience": "من إمتى وهو شغال في مشروعه. أقل من حوالي 6 سنين إشارة أضعف ومرتبطة باحتمال تعثر أعلى وفق تصميم اللعبة دي؛ 8 سنين فأكتر بتدل على مخاطرة أقل.",
-        "glossary_monthly_income": "دخل العميل المُصرَّح بيه شهريًا",
-        "glossary_guarantor": "مدى قرب/ثقة الشخص الضامن للقرض من العميل. الضامن اللي يكون الزوج/الزوجة مرتبط باحتمال تعثر أعلى من الأخ أو الجار، وفق تصميم اللعبة دي.",
-        "glossary_field_investigation": "اللي البنك لقاه بنفسه من زيارة سمعة العميل ومكان مشروعه. السمعة الكويسة في منطقة العميل بتدل إنه أخلاقيًا أميل إنه يسدد.",
-        "glossary_beneficiary": "هل فيه حد تاني بيستفيد من القرض غير العميل نفسه. لو القرض هيستفيد منه حد غير العميل نفسه، ده مرتبط باحتمال تعثر أعلى.",
-        "glossary_literacy": "هل العميل يعرف يقرأ ويكتب. العميل الأمي مرتبط باحتمال تعثر أعلى، وفق تصميم اللعبة دي.",
-        "glossary_credit_limit": "حد الائتمان: نسبة حد الائتمان اللي العميل مستخدمها بالفعل في قروض تانية. القسط اللي جنبها هو اللي بيدفعه حاليًا في القروض دي — والمفروض يتخصم من دخله الشهري عشان تعرفي فعليًا قد إيه هو قادر يسدد لو أخد قرض جديد.",
+        "glossary_credit_score": "الدرجة الائتمانية: تقييم بسيط (مرتفعة/منخفضة) لموثوقية سداد العميل في الماضي — مرتفعة تعني احتمال تعثر أقل، منخفضة تعني احتمال تعثر أعلى.",
+        "glossary_experience": "من إمتى وهو شغال في مشروعه.",
+        "glossary_monthly_income": "دخل العميل المُصرَّح بيه شهريًا.",
+        "glossary_guarantor": "مدى قرب/ثقة الشخص الضامن للقرض من العميل.",
+        "glossary_field_investigation": "اللي البنك لقاه بنفسه من زيارة سمعة العميل ومكان مشروعه.",
+        "glossary_beneficiary": "هل فيه حد تاني بيستفيد من القرض غير العميل نفسه.",
+        "glossary_literacy": "هل العميل يعرف يقرأ ويكتب.",
     },
 }
 
@@ -342,8 +228,8 @@ REASON_IDS = {opt["id"] for opt in REASON_OPTIONS}
 
 
 def points_to_krw(points):
-    # Maps -100 -> 0 KRW and +100 -> 1250 KRW, so 8 max-score cases total 10,000 KRW.
-    return round(1250 * (points + 100) / 200)
+    # Maps -100 -> 0 KRW and +100 -> 1000 KRW, so 10 max-score cases total 10,000 KRW.
+    return round(1000 * (points + 100) / 200)
 
 
 def total_krw_earned(decisions):
@@ -439,8 +325,8 @@ LANGUAGE_HTML = """
 <div class="card">
   <h1>Select Language / اختار اللغة</h1>
   <p class="muted">
-    Review 8 loan applications and decide whether to approve or reject each one.<br>
-    راجع ٨ طلبات قروض وقرر توافق ولا ترفض كل واحد فيهم.
+    Review 10 loan applications and decide whether to approve or reject each one.<br>
+    راجع ١٠ طلبات قروض وقرر توافق ولا ترفض كل واحد فيهم.
   </p>
   <div class="lang-row">
     <a class="btn btn-lang" href="{{ url_for('set_language', lang='en') }}">English</a>
@@ -460,12 +346,11 @@ CASE_HTML = """
 <div class="progress"><div class="progress-fill" style="width: {{ (index / total * 100) | round(1) }}%;"></div></div>
 <div class="card">
   <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }}</h2>
-  <h1>{{ case.business_type[lang] }}</h1>
+  <h1>{{ case.situation[lang] }}</h1>
   <details class="glossary">
     <summary>{{ t('glossary_title') }}</summary>
     <ul>
-      <li>{{ t('glossary_credit_limit') }}</li>
-      <li><strong>{{ t('risk_grade') }}:</strong> {{ t('glossary_risk_grade') }}</li>
+      <li><strong>{{ t('credit_score') }}:</strong> {{ t('glossary_credit_score') }}</li>
       <li><strong>{{ t('experience') }}:</strong> {{ t('glossary_experience') }}</li>
       <li><strong>{{ t('monthly_income') }}:</strong> {{ t('glossary_monthly_income') }}</li>
       <li><strong>{{ t('guarantor') }}:</strong> {{ t('glossary_guarantor') }}</li>
@@ -480,16 +365,12 @@ CASE_HTML = """
       <div class="field-value">{{ '{:,}'.format(case.loan_amount) }} {{ t('egp') }}</div>
     </div>
     <div>
-      <div class="field-label">{{ t('credit_limit') }}</div>
-      <div class="field-value">{{ case.credit_limit_pct }}% &mdash; {{ case.credit_limit_note[lang] }}</div>
-    </div>
-    <div>
-      <div class="field-label">{{ t('risk_grade') }}</div>
-      <div class="field-value">{{ case.risk_grade[lang] }}</div>
+      <div class="field-label">{{ t('credit_score') }}</div>
+      <div class="field-value">{{ t('credit_score_high') if case.credit_score_level == 'high' else t('credit_score_low') }}</div>
     </div>
     <div>
       <div class="field-label">{{ t('experience') }}</div>
-      <div class="field-value">{{ t('first_business') if case.experience_years == 0 else (case.experience_years|string + ' ' + t('years_suffix')) }}</div>
+      <div class="field-value">{{ case.experience_years }} {{ t('years_suffix') }}</div>
     </div>
     <div>
       <div class="field-label">{{ t('monthly_income') }}</div>
@@ -528,7 +409,7 @@ REASON_HTML = """
   <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
 </div>
 <div class="card">
-  <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }} &mdash; {{ business_type }}</h2>
+  <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }} &mdash; {{ case_desc }}</h2>
   <h1>{{ t('reason_question') }}</h1>
   <form method="post" action="{{ url_for('submit_reason') }}">
     <div class="reason-options">
@@ -553,7 +434,7 @@ OUTCOME_HTML = """
   <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
 </div>
 <div class="card">
-  <h2 class="muted">{{ t('case_label').format(n=result.index + 1, total=total) }} &mdash; {{ business_type }}</h2>
+  <h2 class="muted">{{ t('case_label').format(n=result.index + 1, total=total) }} &mdash; {{ case_desc }}</h2>
   <p>{{ t('you_approved') if result.decision == 'approve' else t('you_rejected') }}</p>
   <p class="{{ 'outcome-repay' if result.outcome == 'repay' else 'outcome-default' }}">
     {{ t('outcome_repay') if result.outcome == 'repay' else t('outcome_default') }}
@@ -580,7 +461,7 @@ FINAL_HTML = """
   <table>
     <tr>
       <th>#</th>
-      <th>{{ t('business_type') }}</th>
+      <th>{{ t('case_column') }}</th>
       <th>{{ t('approve') }}/{{ t('reject') }}</th>
       <th>{{ t('outcome') }}</th>
       <th>{{ t('points') }}</th>
@@ -588,7 +469,7 @@ FINAL_HTML = """
     {% for d in decisions %}
     <tr>
       <td>{{ loop.index }}</td>
-      <td>{{ d.business_type }}</td>
+      <td>{{ d.situation }}</td>
       <td>{{ t('approve') if d.decision == 'approve' else t('reject') }}</td>
       <td class="{{ 'outcome-repay' if d.outcome == 'repay' else 'outcome-default' }}">
         {{ t('outcome_repay_short') if d.outcome == 'repay' else t('outcome_default_short') }}
@@ -621,7 +502,9 @@ app.jinja_env.loader = DictLoader({
 def resolve_decisions(decisions, lang):
     return [
         {
-            "business_type": CASES_BY_ID[d["case_id"]]["business_type"][lang],
+            "situation": CASES_BY_ID[d["case_id"]]["situation"][lang],
+            "situation_type": CASES_BY_ID[d["case_id"]]["situation_type"],
+            "credit_score_level": CASES_BY_ID[d["case_id"]]["credit_score_level"],
             "decision": d["decision"],
             "outcome": d["outcome"],
             "delta": d["delta"],
@@ -643,7 +526,9 @@ def save_session_to_csv():
     fieldnames = ["timestamp", "session_id", "language", "total_score", "total_krw"]
     for i in range(1, len(CASES) + 1):
         fieldnames += [
-            f"case{i}_business_type",
+            f"case{i}_situation_type",
+            f"case{i}_credit_score_level",
+            f"case{i}_situation",
             f"case{i}_decision",
             f"case{i}_outcome",
             f"case{i}_points",
@@ -660,7 +545,9 @@ def save_session_to_csv():
         "total_krw": total_krw_earned(session.get("decisions", [])),
     }
     for i, d in enumerate(resolved, start=1):
-        row[f"case{i}_business_type"] = d["business_type"]
+        row[f"case{i}_situation_type"] = d["situation_type"]
+        row[f"case{i}_credit_score_level"] = d["credit_score_level"]
+        row[f"case{i}_situation"] = d["situation"]
         row[f"case{i}_decision"] = d["decision"]
         row[f"case{i}_outcome"] = d["outcome"]
         row[f"case{i}_points"] = d["delta"]
@@ -694,7 +581,8 @@ def send_session_email(lang, score, total_krw, session_id, resolved_decisions):
     ]
     for i, d in enumerate(resolved_decisions, start=1):
         lines.append(
-            f"{i}. {d['business_type']} - {d['decision']} - {d['outcome']} - {d['delta']:+d} "
+            f"{i}. [{d['situation_type']}/{d['credit_score_level']}] {d['situation']} - "
+            f"{d['decision']} - {d['outcome']} - {d['delta']:+d} "
             f"({d['krw']} KRW) - reason: {d['reason']}"
         )
 
@@ -742,6 +630,9 @@ def set_language(lang):
     session["outcomes"] = [
         "repay" if random.random() < c["repay_probability"] else "default" for c in CASES
     ]
+    case_order = list(range(len(CASES)))
+    random.shuffle(case_order)
+    session["case_order"] = case_order
     return redirect(url_for("show_case"))
 
 
@@ -753,10 +644,11 @@ def show_case():
     index = session.get("index", 0)
     if index >= len(CASES):
         return redirect(url_for("final"))
+    case_idx = session["case_order"][index]
     return render_template(
         "case.html",
         lang=lang,
-        case=CASES[index],
+        case=CASES[case_idx],
         index=index,
         total=len(CASES),
         score=session.get("score", 0),
@@ -777,8 +669,9 @@ def decide():
     if decision not in ("approve", "reject"):
         return redirect(url_for("show_case"))
 
-    case = CASES[index]
-    outcome = session["outcomes"][index]
+    case_idx = session["case_order"][index]
+    case = CASES[case_idx]
+    outcome = session["outcomes"][case_idx]
     delta = SCORE_MATRIX[(decision, outcome)]
     krw = points_to_krw(delta)
 
@@ -809,13 +702,13 @@ def show_reason():
     result = session.get("last_result")
     if not lang or not result:
         return redirect(url_for("index"))
-    business_type = CASES_BY_ID[result["case_id"]]["business_type"][lang]
+    case_desc = CASES_BY_ID[result["case_id"]]["situation"][lang]
     reason_options = [{"id": opt["id"], "label": opt[lang]} for opt in REASON_OPTIONS]
     return render_template(
         "reason.html",
         lang=lang,
         index=result["index"],
-        business_type=business_type,
+        case_desc=case_desc,
         total=len(CASES),
         score=session.get("score", 0),
         total_krw=total_krw_earned(session.get("decisions", [])),
@@ -853,12 +746,12 @@ def show_outcome():
         return redirect(url_for("index"))
     if not result.get("reason"):
         return redirect(url_for("show_reason"))
-    business_type = CASES_BY_ID[result["case_id"]]["business_type"][lang]
+    case_desc = CASES_BY_ID[result["case_id"]]["situation"][lang]
     return render_template(
         "outcome.html",
         lang=lang,
         result=result,
-        business_type=business_type,
+        case_desc=case_desc,
         total=len(CASES),
         score=session.get("score", 0),
         total_krw=total_krw_earned(session.get("decisions", [])),
