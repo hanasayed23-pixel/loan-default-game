@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 import requests
-from flask import Flask, redirect, render_template, request, session, url_for
+from flask import Flask, abort, redirect, render_template, request, session, url_for
 from jinja2 import DictLoader
 
 app = Flask(__name__)
@@ -25,6 +25,10 @@ RESEND_API_URL = "https://api.resend.com/emails"
 EMAIL_SENDER = "onboarding@resend.dev"
 EMAIL_RECIPIENT = "hannahmohamed.sayed23@gmail.com"
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+
+# Admin results dashboard (/admin?key=...). Unset by default, which keeps the
+# route 404ing -- set the ADMIN_KEY environment variable to enable it.
+ADMIN_KEY = os.environ.get("ADMIN_KEY")
 
 # ---------------------------------------------------------------------------
 # Case data: 2 (credit score) x 5 (situation) factorial design = 10 cases.
@@ -309,6 +313,7 @@ BASE_HTML = """
   .glossary li { margin-bottom: 6px; font-size: .88rem; color: var(--muted); }
   .glossary li strong { color: var(--text); }
 </style>
+{% block head_extra %}{% endblock %}
 </head>
 <body>
 {% block body %}{% endblock %}
@@ -485,6 +490,86 @@ FINAL_HTML = """
 {% endblock %}
 """
 
+ADMIN_HTML = """
+{% extends 'base.html' %}
+{% block head_extra %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+{% block body %}
+<div class="topbar">
+  <div class="title">Loan Default Game &mdash; Admin Dashboard</div>
+</div>
+<div class="card" style="max-width: 1000px;">
+  <p class="muted">Auto-refreshes every 30 seconds.</p>
+
+  <h2>Summary</h2>
+  <div class="grid">
+    <div>
+      <div class="field-label">Total sessions completed</div>
+      <div class="field-value">{{ total_sessions }}</div>
+    </div>
+    <div>
+      <div class="field-label">Average KRW earned</div>
+      <div class="field-value">{{ avg_krw }}</div>
+    </div>
+    <div>
+      <div class="field-label">Average total score</div>
+      <div class="field-value">{{ avg_score }}</div>
+    </div>
+  </div>
+
+  <h2>Approval rate: credit score &times; situation</h2>
+  <div style="overflow-x: auto;">
+  <table>
+    <tr>
+      <th>Credit score</th>
+      {% for stype in situation_types %}<th>{{ stype }}</th>{% endfor %}
+    </tr>
+    {% for row in crosstab_rows %}
+    <tr>
+      <td>{{ 'High' if row.level == 'high' else 'Low' }}</td>
+      {% for cell in row.cells %}
+      <td>
+        {% if cell.pct is not none %}{{ cell.pct }}%{% else %}&mdash;{% endif %}
+        <span class="muted">(n={{ cell.n }})</span>
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+
+  <h2>Reason selected (all decisions, all sessions)</h2>
+  <table>
+    <tr><th>Reason</th><th>Times selected</th></tr>
+    {% for r in reason_table %}
+    <tr><td>{{ r.label }}</td><td>{{ r.count }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>All completed sessions ({{ total_sessions }})</h2>
+  <div style="overflow-x: auto;">
+  <table>
+    <tr>
+      <th>Timestamp</th>
+      <th>Session ID</th>
+      <th>Total KRW</th>
+      <th>Total score</th>
+    </tr>
+    {% for s in sessions_table %}
+    <tr>
+      <td>{{ s.timestamp }}</td>
+      <td>{{ s.session_id }}</td>
+      <td>{{ s.total_krw }}</td>
+      <td>{{ s.total_score }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}
+"""
+
 app.jinja_env.loader = DictLoader({
     "base.html": BASE_HTML,
     "language.html": LANGUAGE_HTML,
@@ -492,6 +577,7 @@ app.jinja_env.loader = DictLoader({
     "reason.html": REASON_HTML,
     "outcome.html": OUTCOME_HTML,
     "final.html": FINAL_HTML,
+    "admin.html": ADMIN_HTML,
 })
 
 # ---------------------------------------------------------------------------
@@ -559,6 +645,13 @@ def save_session_to_csv():
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
+
+
+def read_sessions_csv():
+    if not os.path.isfile(CSV_PATH):
+        return []
+    with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +891,86 @@ def final():
 def restart():
     session.clear()
     return redirect(url_for("index"))
+
+
+@app.route("/admin")
+def admin_dashboard():
+    # Wrong/missing key looks identical to a route that doesn't exist.
+    if not ADMIN_KEY or request.args.get("key") != ADMIN_KEY:
+        abort(404)
+
+    rows = read_sessions_csv()
+
+    def to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    total_sessions = len(rows)
+    avg_krw = round(sum(to_float(r.get("total_krw")) for r in rows) / total_sessions, 1) if total_sessions else 0
+    avg_score = round(sum(to_float(r.get("total_score")) for r in rows) / total_sessions, 1) if total_sessions else 0
+
+    sessions_table = sorted(
+        (
+            {
+                "timestamp": r.get("timestamp", ""),
+                "session_id": r.get("session_id", ""),
+                "total_krw": r.get("total_krw", ""),
+                "total_score": r.get("total_score", ""),
+            }
+            for r in rows
+        ),
+        key=lambda r: r["timestamp"],
+        reverse=True,
+    )
+
+    situation_types = [s["type"] for s in SITUATIONS]
+    credit_levels = ["high", "low"]
+    crosstab = {
+        level: {stype: {"approve": 0, "total": 0} for stype in situation_types}
+        for level in credit_levels
+    }
+    reason_counts = {opt["id"]: 0 for opt in REASON_OPTIONS}
+
+    for r in rows:
+        for i in range(1, len(CASES) + 1):
+            level = r.get(f"case{i}_credit_score_level")
+            stype = r.get(f"case{i}_situation_type")
+            decision = r.get(f"case{i}_decision")
+            reason = r.get(f"case{i}_reason")
+            if level in crosstab and stype in crosstab[level]:
+                crosstab[level][stype]["total"] += 1
+                if decision == "approve":
+                    crosstab[level][stype]["approve"] += 1
+            if reason in reason_counts:
+                reason_counts[reason] += 1
+
+    crosstab_rows = []
+    for level in credit_levels:
+        cells = []
+        for stype in situation_types:
+            cell = crosstab[level][stype]
+            pct = round(100 * cell["approve"] / cell["total"], 1) if cell["total"] else None
+            cells.append({"pct": pct, "n": cell["total"]})
+        crosstab_rows.append({"level": level, "cells": cells})
+
+    reason_table = [
+        {"id": opt["id"], "label": opt["en"], "count": reason_counts[opt["id"]]}
+        for opt in REASON_OPTIONS
+    ]
+
+    return render_template(
+        "admin.html",
+        lang="en",
+        total_sessions=total_sessions,
+        avg_krw=avg_krw,
+        avg_score=avg_score,
+        sessions_table=sessions_table,
+        situation_types=situation_types,
+        crosstab_rows=crosstab_rows,
+        reason_table=reason_table,
+    )
 
 
 if __name__ == "__main__":
