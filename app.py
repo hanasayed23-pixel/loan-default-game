@@ -211,22 +211,10 @@ SCORE_MATRIX = {
 
 # Reason options shown after each decision, before the outcome is revealed.
 REASON_OPTIONS = [
-    {"id": "credit_score", "en": "Credit score", "ar": "التصنيف الائتماني"},
-    {"id": "experience", "en": "Years of business experience", "ar": "سنين الخبرة في النشاط"},
-    {"id": "monthly_income", "en": "Monthly income", "ar": "الدخل الشهري"},
-    {"id": "guarantor", "en": "Guarantor relationship", "ar": "علاقة الضامن"},
-    {
-        "id": "field_investigation",
-        "en": "Field investigation notes (reputation/location)",
-        "ar": "تقرير المعاينة الميدانية (السمعة/الموقع)",
-    },
-    {"id": "beneficiary", "en": "Existence of a third-party beneficiary", "ar": "وجود مستفيد من الغير"},
-    {"id": "literacy", "en": "Literacy", "ar": "محو الأمية"},
-    {
-        "id": "credit_limit",
-        "en": "Credit utilization and existing loan installments",
-        "ar": "نسبة استخدام الائتمان وقسط القروض التانية",
-    },
+    {"id": "credit_score", "en": "Credit score", "ar": "الدرجة الائتمانية"},
+    {"id": "situation", "en": "The applicant's business situation/story", "ar": "موقف/قصة صاحب المشروع"},
+    {"id": "both", "en": "Both equally", "ar": "الاتنين مع بعض"},
+    {"id": "other", "en": "Something else", "ar": "حاجة تانية"},
 ]
 REASON_IDS = {opt["id"] for opt in REASON_OPTIONS}
 
