@@ -112,6 +112,14 @@ for _situation in SITUATIONS:
 TRANSLATIONS = {
     "en": {
         "title": "Loan Default Game",
+        "how_to_play_title": "How to Play",
+        "how_to_play_p1": "You'll play the role of a loan officer at a microfinance bank. You'll review 10 loan applications, one at a time.",
+        "how_to_play_p2": "Each one shows a credit score (High or Low) and a short situation describing the applicant's circumstances.",
+        "how_to_play_p3": "For each one, decide: Approve or Reject — just as you would in your actual work.",
+        "how_to_play_p4": "After each decision, you'll be asked what mattered most in your choice.",
+        "how_to_play_p5": "Correct decisions earn KRW, up to 10,000 KRW across all 10.",
+        "how_to_play_p6": "There are no right or wrong answers — take your time.",
+        "start_game": "Start Game",
         "case_label": "Case {n} of {total}",
         "loan_amount": "Loan Amount",
         "egp": "EGP",
@@ -156,6 +164,14 @@ TRANSLATIONS = {
     },
     "ar": {
         "title": "لعبة تعثر السداد",
+        "how_to_play_title": "إزاي تلعب",
+        "how_to_play_p1": "هتلعب دور موظف قروض في بنك تمويل صغير. هتشوف 10 طلبات قروض، واحد بعد التاني.",
+        "how_to_play_p2": "كل طلب فيه درجة ائتمانية (مرتفعة أو منخفضة) وموقف قصير عن ظروف صاحب المشروع.",
+        "how_to_play_p3": "لكل طلب: قرر توافق ولا ترفض، زي ما كنت هتقرر فعلاً في شغلك.",
+        "how_to_play_p4": "بعد كل قرار، هيسألك إيه أهم سبب خلاك تقرر كده.",
+        "how_to_play_p5": "القرارات الصح بتكسبك وون كوري، لحد 10,000 وون على الـ10 كلهم.",
+        "how_to_play_p6": "مفيش إجابة صح أو غلط — خد وقتك.",
+        "start_game": "ابدأ اللعبة",
         "case_label": "الحالة {n} من {total}",
         "loan_amount": "مبلغ القرض",
         "egp": "جنيه",
@@ -327,6 +343,25 @@ LANGUAGE_HTML = """
     <a class="btn btn-lang" href="{{ url_for('set_language', lang='en') }}">English</a>
     <a class="btn btn-lang" href="{{ url_for('set_language', lang='ar') }}">المصري</a>
   </div>
+</div>
+{% endblock %}
+"""
+
+HOW_TO_PLAY_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+</div>
+<div class="card">
+  <h1>{{ t('how_to_play_title') }}</h1>
+  <p>{{ t('how_to_play_p1') }}</p>
+  <p>{{ t('how_to_play_p2') }}</p>
+  <p>{{ t('how_to_play_p3') }}</p>
+  <p>{{ t('how_to_play_p4') }}</p>
+  <p>{{ t('how_to_play_p5') }}</p>
+  <p class="muted">{{ t('how_to_play_p6') }}</p>
+  <a class="btn btn-continue" href="{{ url_for('show_case') }}" style="display: block; width: 100%; margin-top: 8px;">{{ t('start_game') }}</a>
 </div>
 {% endblock %}
 """
@@ -569,6 +604,7 @@ ADMIN_HTML = """
 app.jinja_env.loader = DictLoader({
     "base.html": BASE_HTML,
     "language.html": LANGUAGE_HTML,
+    "how_to_play.html": HOW_TO_PLAY_HTML,
     "case.html": CASE_HTML,
     "reason.html": REASON_HTML,
     "outcome.html": OUTCOME_HTML,
@@ -857,7 +893,15 @@ def set_language(lang):
     case_order = list(range(len(CASES)))
     random.shuffle(case_order)
     session["case_order"] = case_order
-    return redirect(url_for("show_case"))
+    return redirect(url_for("how_to_play"))
+
+
+@app.route("/how-to-play")
+def how_to_play():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    return render_template("how_to_play.html", lang=lang)
 
 
 @app.route("/case")
