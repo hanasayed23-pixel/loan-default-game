@@ -254,6 +254,7 @@ BASE_HTML = """
     --text: #e2e8f0;
     --muted: #94a3b8;
     --accent: #38bdf8;
+    --amber: #f59e0b;
     --green: #22c55e;
     --red: #ef4444;
   }
@@ -300,6 +301,7 @@ BASE_HTML = """
   .glossary ul { margin: 10px 0 0; padding-inline-start: 18px; }
   .glossary li { margin-bottom: 6px; font-size: .88rem; color: var(--muted); }
   .glossary li strong { color: var(--text); }
+  .chart-box { background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 16px; margin: 4px 0 16px; }
 </style>
 {% block head_extra %}{% endblock %}
 </head>
@@ -507,6 +509,9 @@ ADMIN_HTML = """
   </div>
 
   <h2>Approval rate: credit score &times; situation</h2>
+  <div class="chart-box">
+    {% if approval_chart_svg %}{{ approval_chart_svg | safe }}{% else %}<p class="muted">No data yet.</p>{% endif %}
+  </div>
   <div style="overflow-x: auto;">
   <table>
     <tr>
@@ -528,6 +533,9 @@ ADMIN_HTML = """
   </div>
 
   <h2>Reason selected (all decisions, all sessions)</h2>
+  <div class="chart-box">
+    {% if reason_chart_svg %}{{ reason_chart_svg | safe }}{% else %}<p class="muted">No data yet.</p>{% endif %}
+  </div>
   <table>
     <tr><th>Reason</th><th>Times selected</th></tr>
     {% for r in reason_table %}
@@ -640,6 +648,141 @@ def read_sessions_csv():
         return []
     with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard charts (server-rendered inline SVG, no JS dependency)
+# ---------------------------------------------------------------------------
+
+# Short labels for the reason bar chart only -- the table keeps the full text.
+REASON_CHART_LABELS = {
+    "credit_score": "Credit score",
+    "situation": "Business situation",
+    "both": "Both equally",
+    "other": "Something else",
+}
+
+
+def _svg_escape(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def render_approval_chart(crosstab_rows, situation_types):
+    cells_by_level = {row["level"]: row["cells"] for row in crosstab_rows}
+    high_cells = cells_by_level.get("high", [])
+    low_cells = cells_by_level.get("low", [])
+    total_n = sum(c["n"] for c in high_cells) + sum(c["n"] for c in low_cells)
+    if total_n == 0:
+        return None
+
+    width, height = 640, 300
+    margin_left, margin_right, margin_top, margin_bottom = 40, 12, 36, 56
+    plot_w = width - margin_left - margin_right
+    plot_h = height - margin_top - margin_bottom
+    n_groups = max(len(situation_types), 1)
+    group_w = plot_w / n_groups
+    bar_w = group_w * 0.32
+    gap = group_w * 0.08
+
+    def y_for_pct(pct):
+        return margin_top + plot_h * (1 - pct / 100)
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Approval rate by credit score and situation" '
+        f'style="width:100%;height:auto;font-family:inherit;">'
+    ]
+
+    for pct in (0, 25, 50, 75, 100):
+        y = y_for_pct(pct)
+        dash = "" if pct == 0 else ' stroke-dasharray="3,3"'
+        parts.append(
+            f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width - margin_right}" y2="{y:.1f}" '
+            f'stroke="var(--card-border)" stroke-width="1"{dash}/>'
+        )
+        parts.append(
+            f'<text x="{margin_left - 8}" y="{y + 4:.1f}" text-anchor="end" '
+            f'font-size="11" fill="var(--muted)">{pct}%</text>'
+        )
+
+    legend_y = 16
+    parts.append(f'<rect x="{margin_left}" y="{legend_y - 9}" width="10" height="10" fill="var(--accent)" rx="2"/>')
+    parts.append(f'<text x="{margin_left + 16}" y="{legend_y}" font-size="12" fill="var(--text)">High credit score</text>')
+    legend_x2 = margin_left + 160
+    parts.append(f'<rect x="{legend_x2}" y="{legend_y - 9}" width="10" height="10" fill="var(--amber)" rx="2"/>')
+    parts.append(f'<text x="{legend_x2 + 16}" y="{legend_y}" font-size="12" fill="var(--text)">Low credit score</text>')
+
+    for gi, stype in enumerate(situation_types):
+        group_x = margin_left + gi * group_w
+        high_cell = high_cells[gi] if gi < len(high_cells) else {"pct": None, "n": 0}
+        low_cell = low_cells[gi] if gi < len(low_cells) else {"pct": None, "n": 0}
+        bx_high = group_x + gap
+        bx_low = bx_high + bar_w + gap
+
+        for cell, bx, color in ((high_cell, bx_high, "var(--accent)"), (low_cell, bx_low, "var(--amber)")):
+            pct = cell["pct"] or 0
+            y = y_for_pct(pct)
+            bar_h = (margin_top + plot_h) - y
+            parts.append(
+                f'<rect x="{bx:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" fill="{color}" rx="2"/>'
+            )
+            if cell["pct"] is not None:
+                parts.append(
+                    f'<text x="{bx + bar_w / 2:.1f}" y="{y - 6:.1f}" text-anchor="middle" '
+                    f'font-size="11" fill="var(--text)">{cell["pct"]}%</text>'
+                )
+            parts.append(
+                f'<text x="{bx + bar_w / 2:.1f}" y="{margin_top + plot_h + 14:.1f}" text-anchor="middle" '
+                f'font-size="10" fill="var(--muted)">n={cell["n"]}</text>'
+            )
+
+        label = _svg_escape(stype.replace("_", " "))
+        parts.append(
+            f'<text x="{group_x + group_w / 2:.1f}" y="{margin_top + plot_h + 34:.1f}" text-anchor="middle" '
+            f'font-size="11" fill="var(--text)">{label}</text>'
+        )
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_reason_chart(reason_table):
+    total = sum(r["count"] for r in reason_table)
+    if total == 0:
+        return None
+
+    rows = sorted(reason_table, key=lambda r: r["count"], reverse=True)
+    max_count = max(r["count"] for r in rows) or 1
+
+    width = 640
+    row_h = 40
+    margin_top, margin_bottom = 10, 10
+    height = margin_top + margin_bottom + row_h * len(rows)
+    label_w = 190
+    bar_area_w = width - label_w - 50
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Reason selected breakdown" '
+        f'style="width:100%;height:auto;font-family:inherit;">'
+    ]
+    for i, r in enumerate(rows):
+        y = margin_top + i * row_h
+        bar_y = y + (row_h - 20) / 2
+        bar_h = 20
+        bar_w = bar_area_w * (r["count"] / max_count)
+        label = _svg_escape(REASON_CHART_LABELS.get(r["id"], r["label"]))
+        parts.append(
+            f'<text x="0" y="{y + row_h / 2 + 4:.1f}" font-size="12" fill="var(--text)">{label}</text>'
+        )
+        parts.append(
+            f'<rect x="{label_w}" y="{bar_y:.1f}" width="{bar_w:.1f}" height="{bar_h}" fill="var(--accent)" rx="3"/>'
+        )
+        parts.append(
+            f'<text x="{label_w + bar_w + 8:.1f}" y="{bar_y + bar_h / 2 + 4:.1f}" '
+            f'font-size="12" fill="var(--muted)">{r["count"]}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +1101,8 @@ def admin_dashboard():
         situation_types=situation_types,
         crosstab_rows=crosstab_rows,
         reason_table=reason_table,
+        approval_chart_svg=render_approval_chart(crosstab_rows, situation_types),
+        reason_chart_svg=render_reason_chart(reason_table),
     )
 
 
