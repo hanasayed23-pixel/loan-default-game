@@ -108,7 +108,7 @@ def fig_conflict(h3, eff):
     x = np.arange(len(eff))
     w = 0.38
     ax2.bar(x - w / 2, 100 * eff["effect_credit_score_H1"], width=w, color=NAVY, label="Credit score (H1)")
-    ax2.bar(x + w / 2, 100 * eff["effect_repayment_capacity_H2"], width=w, color=ACCENT, label="Repayment capacity (H2)")
+    ax2.bar(x + w / 2, 100 * eff["effect_loan_purpose_H2"], width=w, color=ACCENT, label="Loan purpose (H2)")
     ax2.axhline(0, color="#4A4F58", linewidth=0.9)
     ax2.set_xticks(x)
     ax2.set_xticklabels([f"P{p}" for p in eff["participant_id"]])
@@ -116,7 +116,7 @@ def fig_conflict(h3, eff):
     ax2.set_title("Effect size per participant")
     ax2.legend(frameon=False, fontsize=8)
 
-    fig.suptitle("H3  Does credit score dominate repayment capacity?", fontsize=12,
+    fig.suptitle("H3  Does credit score dominate the stated loan purpose?", fontsize=12,
                  fontweight="bold", color=NAVY, x=0.02, ha="left", y=1.02)
     fig.text(0.02, 0.955,
              f"Conflict-cell difference = {100*h3['statistic']:+.1f} pp, exact p = {h3['p_value']:.4f}",
@@ -130,20 +130,18 @@ def fig_cells_and_reasons(cells, reasons):
 
     c = cells.copy()
     c["label"] = (
-        c["credit_score"].astype(str).str[0]
+        c["credit_score_level"].astype(str).str[0]
         + " / "
         + c["use_of_funds"].astype(str).str.slice(0, 8)
-        + " / "
-        + c["framing"].astype(str).str.slice(0, 7)
     )
-    colors = [NAVY if s.lower() == "high" else ACCENT for s in c["credit_score"].astype(str)]
+    colors = [NAVY if s.lower() == "high" else ACCENT for s in c["credit_score_level"].astype(str)]
     ax1.barh(range(len(c)), 100 * c["approval_rate"], color=colors, height=0.66)
     ax1.set_yticks(range(len(c)))
     ax1.set_yticklabels(c["label"], fontsize=8)
     ax1.invert_yaxis()
     ax1.set_xlabel("Approval rate (%)")
     ax1.set_xlim(0, 108)
-    ax1.set_title("All 8 design cells  (score / use / framing)")
+    ax1.set_title("Four design cells  (score / stated purpose)")
     for i, v in enumerate(100 * c["approval_rate"]):
         ax1.text(v + 1.5, i, f"{v:.0f}%", va="center", fontsize=8, color=NAVY)
 
@@ -245,14 +243,14 @@ def main():
                          f"randomisation p = {h1['p_value']:.4f}",
                          "effect_credit_score_H1")
     f2 = fig_main_effect(df, eff, "use_productive", ["Non-productive", "Productive"],
-                         "H2  Effect of prospective repayment capacity on approval",
+                         "H2  Effect of the stated loan purpose on approval",
                          f"Within-participant difference = {100*h2['statistic']:+.1f} pp, "
                          f"randomisation p = {h2['p_value']:.4f}",
-                         "effect_repayment_capacity_H2")
+                         "effect_loan_purpose_H2")
     f3 = fig_conflict(h3, eff)
     f4 = fig_cells_and_reasons(cells, reasons)
 
-    names = ["H1_credit_score", "H2_repayment_capacity", "H3_dominance", "cells_and_reasons"]
+    names = ["H1_credit_score", "H2_loan_purpose", "H3_dominance", "cells_and_reasons"]
     for fig, nm in zip([f1, f2, f3, f4], names):
         fig.savefig(os.path.join(chart_dir, f"{nm}.png"), bbox_inches="tight", facecolor="white")
 
@@ -261,7 +259,7 @@ def main():
         cover = plt.figure(figsize=(8.27, 11.69))
         cover.text(0.07, 0.94, "Loan Officer Vignette Experiment", fontsize=19,
                    fontweight="bold", color=NAVY)
-        cover.text(0.07, 0.915, "Credit Score or Repayment Capacity?  Pilot session results",
+        cover.text(0.07, 0.915, "Credit Score or Stated Loan Purpose?  Pilot session results",
                    fontsize=11, color=GREY)
         cover.text(0.07, 0.893, datetime.now().strftime("Session analysed %d %B %Y, %H:%M"),
                    fontsize=9, color=GREY)
@@ -294,9 +292,9 @@ def main():
         cover.text(0.07, y, "Design and sample", fontsize=13, fontweight="bold", color=NAVY)
         y -= 0.026
         for line in [
-            "2 x 2 x 2 within-subject factorial: credit score (high / low) x use of funds "
-            "(productive / non-productive) x urgency framing (planned / urgent). All eight cells "
-            "shown once per participant in randomised order.",
+            "2 x 2 within-subject factorial: credit score (high / low) x stated purpose "
+            "(productive / personal). Each participant reviews two different stories in every "
+            "cell, shown in randomised order.",
             f"{n_part} participants x 8 vignettes = {len(df)} decisions. Every hard financial field "
             "(loan amount, monthly income, years in business, guarantor, field investigation, "
             "literacy) held identical across all vignettes; only the credit score and the one-line "
@@ -320,7 +318,6 @@ def main():
         for term, pretty in [
             ("credit_score_high_H1", "Credit score high  (H1)"),
             ("use_productive_H2", "Productive use     (H2)"),
-            ("framing_urgent", "Urgent framing        "),
         ]:
             row = cs[cs.term == term].iloc[0]
             cover.text(0.075, y, f"{pretty}   b = {row['coefficient']:+.3f}   "
@@ -361,11 +358,12 @@ def main():
                 "Source of every number in this workbook",
             ],
             "Detail": [
-                "2x2x2 within-subject factorial: credit score x use of funds x urgency framing; "
-                "all eight cells shown once per participant in randomised order.",
+                "2x2 within-subject factorial: credit score x stated loan purpose; "
+                "two different stories per cell, shown in randomised order.",
                 n_part,
                 len(df),
-                "Binary approve/reject. Secondary continuous measure: approved amount in EGP.",
+                "Binary approve/reject. Secondary measures: estimated repayment probability "
+                "and estimated business-success probability (0-100%).",
                 "Monte-Carlo randomisation test, labels permuted within participant, "
                 f"{args.perms} draws, seed {he.RNG_SEED}.",
                 f"Monte-Carlo randomisation test, same procedure, {args.perms} draws.",
@@ -387,7 +385,7 @@ def main():
     tables = {
         "Hypotheses_H1_H2_H3": headline,
         "By_Participant": eff.round(3),
-        "Cell_Means_8_cells": cells.round(3),
+        "Cell_Means_4_cells": cells.round(3),
         "H3_Conflict_Cells": h3["per_participant"].round(3),
         "Model_Coefficients": lpm["coefficients"].round(4),
         "Reasons_Given": reasons,

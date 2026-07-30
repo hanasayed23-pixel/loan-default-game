@@ -1,10 +1,10 @@
 """
 hypothesis_engine.py
-Core statistics for the Loan Officer Vignette Experiment (2x2x2 within-subject).
+Core statistics for the Loan Officer Vignette Experiment (2x2 within-subject).
 
 Maps the collected decision data onto the three proposal hypotheses:
   H1  Credit score main effect
-  H2  Prospective repayment capacity main effect (productive vs non-productive use)
+  H2  Stated loan-purpose main effect (productive vs personal use)
   H3  Credit-score dominance when the two signals conflict
 
 Inference method: exact / Monte-Carlo randomisation (permutation) tests under the
@@ -27,7 +27,7 @@ N_PERM = 20000
 # Data preparation
 # ----------------------------------------------------------------------------
 
-REQUIRED = ["participant_id", "credit_score", "use_of_funds", "framing", "decision"]
+REQUIRED = ["participant_id", "credit_score_level", "use_of_funds", "decision"]
 
 
 def load_and_prepare(csv_paths):
@@ -55,19 +55,16 @@ def load_and_prepare(csv_paths):
 
     # Binary factor codings
     df["score_high"] = (
-        df["credit_score"].astype(str).str.strip().str.lower().eq("high")
+        df["credit_score_level"].astype(str).str.strip().str.lower().eq("high")
     ).astype(int)
     df["use_productive"] = (
         df["use_of_funds"].astype(str).str.strip().str.lower().str.startswith("prod")
     ).astype(int)
-    df["framing_urgent"] = (
-        df["framing"].astype(str).str.strip().str.lower().eq("urgent")
-    ).astype(int)
-
     df["participant_id"] = df["participant_id"].astype(str)
 
-    if "approved_amount" in df.columns:
-        df["approved_amount"] = pd.to_numeric(df["approved_amount"], errors="coerce")
+    for col in ("credit_score", "repayment_probability", "business_success_probability"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "round_index" in df.columns:
         df["round_index"] = pd.to_numeric(df["round_index"], errors="coerce")
@@ -86,15 +83,13 @@ def participant_effects(df):
     for pid, g in df.groupby("participant_id"):
         d_score = g.loc[g.score_high == 1, "approve"].mean() - g.loc[g.score_high == 0, "approve"].mean()
         d_use = g.loc[g.use_productive == 1, "approve"].mean() - g.loc[g.use_productive == 0, "approve"].mean()
-        d_fram = g.loc[g.framing_urgent == 1, "approve"].mean() - g.loc[g.framing_urgent == 0, "approve"].mean()
         rows.append(
             {
                 "participant_id": pid,
                 "n_decisions": len(g),
                 "overall_approval_rate": g["approve"].mean(),
                 "effect_credit_score_H1": d_score,
-                "effect_repayment_capacity_H2": d_use,
-                "effect_urgency_framing": d_fram,
+                "effect_loan_purpose_H2": d_use,
                 "dominance_gap_H3": d_score - d_use,
             }
         )
@@ -103,17 +98,21 @@ def participant_effects(df):
 
 
 def cell_means(df):
-    """Approval rate in each of the 8 design cells."""
-    g = df.groupby(["credit_score", "use_of_funds", "framing"], dropna=False)
+    """Approval rate in each of the four design cells."""
+    g = df.groupby(["credit_score_level", "use_of_funds"], dropna=False)
     out = g.agg(
         n=("approve", "size"),
         n_approved=("approve", "sum"),
         approval_rate=("approve", "mean"),
     ).reset_index()
-    if "approved_amount" in df.columns:
-        amt = g["approved_amount"].mean().reset_index(name="mean_approved_amount_egp")
-        out = out.merge(amt, on=["credit_score", "use_of_funds", "framing"], how="left")
-    return out.sort_values(["credit_score", "use_of_funds", "framing"]).reset_index(drop=True)
+    for col, label in (
+        ("repayment_probability", "mean_estimated_repayment_probability"),
+        ("business_success_probability", "mean_estimated_business_success_probability"),
+    ):
+        if col in df.columns:
+            means = g[col].mean().reset_index(name=label)
+            out = out.merge(means, on=["credit_score_level", "use_of_funds"], how="left")
+    return out.sort_values(["credit_score_level", "use_of_funds"]).reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------------
@@ -227,14 +226,14 @@ def conflict_cell_test(df):
 def lpm_with_wald(df):
     """
     OLS linear probability model:
-        approve = participant FE + b1*score_high + b2*use_productive + b3*framing_urgent
+        approve = participant FE + b1*score_high + b2*use_productive
     Wald test of the H3 restriction b1 = b2 (credit-score dominance).
     Reported for continuity with the proposal; the randomisation tests above are
     the primary inference given only 4 participants.
     """
     pids = sorted(df["participant_id"].unique())
     D = np.column_stack([(df["participant_id"] == p).astype(float) for p in pids])
-    X = np.column_stack([D, df["score_high"], df["use_productive"], df["framing_urgent"]]).astype(float)
+    X = np.column_stack([D, df["score_high"], df["use_productive"]]).astype(float)
     y = df["approve"].to_numpy(dtype=float)
 
     XtX_inv = np.linalg.pinv(X.T @ X)
@@ -249,7 +248,6 @@ def lpm_with_wald(df):
     names = [f"FE_participant_{p}" for p in pids] + [
         "credit_score_high_H1",
         "use_productive_H2",
-        "framing_urgent",
     ]
     coefs = pd.DataFrame({"term": names, "coefficient": beta, "std_error": se})
     coefs["t_stat"] = coefs["coefficient"] / coefs["std_error"].replace(0, np.nan)
@@ -338,7 +336,7 @@ def _f_sf(f, d1, d2):
 def hypothesis_table(df, h1, h2, h3_conflict, eff, lpm):
     n_part = eff.shape[0]
     same_dir_h1 = int((eff["effect_credit_score_H1"] > 0).sum())
-    same_dir_h2 = int((eff["effect_repayment_capacity_H2"] > 0).sum())
+    same_dir_h2 = int((eff["effect_loan_purpose_H2"] > 0).sum())
     same_dir_h3 = int((eff["dominance_gap_H3"] > 0).sum())
 
     def verdict(stat, p, direction_count, expected_sign=1):
@@ -367,7 +365,7 @@ def hypothesis_table(df, h1, h2, h3_conflict, eff, lpm):
         },
         {
             "Hypothesis": "H2",
-            "Statement": "Applicants whose stated loan use generates income to service the loan (prospective repayment capacity) are approved more often.",
+            "Statement": "Applicants with a productive, income-generating stated purpose are approved more often than applicants with a personal stated purpose.",
             "Test": "Randomisation test on within-participant difference in approval rate (Productive - Non-productive)",
             "Effect (pp)": 100 * h2["statistic"],
             "p-value": h2["p_value"],

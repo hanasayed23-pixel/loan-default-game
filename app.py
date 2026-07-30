@@ -1,15 +1,14 @@
 r"""
 app.py - Loan Default Game (English only)
-2x2x2 within-subject factorial | 8 rounds | ~30-40 s per round | RIS payment
+2x2 within-subject factorial | 8 rounds | 60 s + 30 s grace | RIS payment
 
 Design targets
   * ONE page load for all 8 rounds. Round advance is client-side, so a slow
     free-tier server cannot add latency between decisions.
-  * Every round on a single screen: applicant card + decision + amount + reason.
-  * Previous round's outcome appears as an inline banner on the next card.
+  * Every round is one screen: applicant card, decision, two probability
+    judgments, and the participant's main deciding factor.
   * Keyboard shortcuts for motor speed:
         A / R           approve / reject
-        1-5             approved amount
         Z X C V B N     deciding factor
         Enter           next application
     (Reason keys deliberately avoid A and R, which are taken by the decision.)
@@ -17,12 +16,11 @@ Design targets
 Scientific constraints deliberately enforced in the markup
   * Credit score High and Low are rendered with IDENTICAL styling. Colour-coding
     them would add a valence cue on top of the manipulated text.
-  * All four purposes are rendered with identical styling and comparable length.
+  * Eight different stories are used. Credit-score assignment is counterbalanced
+    across participant IDs so a story is not permanently tied to one score level.
   * Approve and Reject are visually symmetric; only label and position differ.
-  * The eight repay/default outcomes are drawn ONCE at session start, before any
-    decision is made, so no outcome can depend on the choice.
-  * No countdown timer anywhere. Time pressure would be an uncontrolled
-    treatment. Pace is monitored by the researcher on /admin instead.
+  * Outcomes are drawn before decisions and revealed only after all eight rounds,
+    preventing feedback in an early round from changing later decisions.
 
 Run locally:  py app.py     ->  http://127.0.0.1:5000
 Admin:        http://127.0.0.1:5000/admin?key=<ADMIN_KEY>
@@ -47,47 +45,66 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "kdi2026")
 PARTICIPANT_IDS = ["01", "02", "03", "04"]
 
 # ---------------------------------------------------------------------------
-# Design: the 2x2x2 factorial
+# Design: 2x2 within-subject factorial, two observations per cell
 # ---------------------------------------------------------------------------
 
-DEFAULT_PROB = {"High": 0.20, "Low": 0.45}     # depends on credit score ONLY
+DEFAULT_PROB = {"High": 0.20, "Low": 0.45}
 MAX_BONUS_KRW = 5000
 
-PURPOSES = [
+STORIES = [
     {
-        "code": "P1", "use": "Productive", "framing": "Planned",
+        "code": "P1", "use": "Productive",
         "label": "Increase shop stock to raise sales",
         "text": "He wants to increase the shop's stock to raise sales.",
+        "name": "Mahmoud", "loc": "Kom Ombo",
     },
     {
-        "code": "P2", "use": "Productive", "framing": "Urgent",
-        "label": "Replace stolen shop fittings to reopen",
-        "text": "The shop's display fridge and scale were stolen last month; "
-                "he needs to replace them to reopen.",
+        "code": "P2", "use": "Productive",
+        "label": "Open a second grocery branch",
+        "text": "He wants to open a second grocery branch in a nearby village.",
+        "name": "Atef", "loc": "Daraw",
     },
     {
-        "code": "P3", "use": "Non-productive", "framing": "Planned",
+        "code": "P3", "use": "Productive",
+        "label": "Buy a refrigerator and display shelves",
+        "text": "He wants to buy a refrigerator and display shelves for the shop.",
+        "name": "Ragab", "loc": "Edfu",
+    },
+    {
+        "code": "P4", "use": "Productive",
+        "label": "Add a home-delivery service",
+        "text": "He wants to buy a delivery motorcycle and add home delivery.",
+        "name": "Sayed", "loc": "Nasr El-Nuba",
+    },
+    {
+        "code": "N1", "use": "Non-productive",
         "label": "Daughter's wedding trousseau",
         "text": "He needs the loan to cover his daughter's wedding trousseau next month.",
+        "name": "Ashraf", "loc": "El-Sebaeya",
     },
     {
-        "code": "P4", "use": "Non-productive", "framing": "Urgent",
+        "code": "N2", "use": "Non-productive",
+        "label": "Pay for urgent medical treatment",
+        "text": "He needs the loan to pay for urgent medical treatment for his wife.",
+        "name": "Yasser", "loc": "Abu El-Rish",
+    },
+    {
+        "code": "N3", "use": "Non-productive",
         "label": "Repay an overdue loan from another lender",
         "text": "He has an overdue loan from another lender and must repay it "
                 "soon before they take action against him.",
+        "name": "Hassan", "loc": "El-Shallal",
+    },
+    {
+        "code": "N4", "use": "Non-productive",
+        "label": "Pay a son's university fees",
+        "text": "He needs the loan to pay his son's university fees this semester.",
+        "name": "Mostafa", "loc": "Sehel Island",
     },
 ]
 
-NAMES = {
-    ("High", "P1"): ("Mahmoud", "Kom Ombo"),
-    ("High", "P2"): ("Atef", "Daraw"),
-    ("High", "P3"): ("Ragab", "Edfu"),
-    ("High", "P4"): ("Sayed", "Nasr El-Nuba"),
-    ("Low", "P1"): ("Ashraf", "El-Sebaeya"),
-    ("Low", "P2"): ("Yasser", "Abu El-Rish"),
-    ("Low", "P3"): ("Hassan", "El-Shallal"),
-    ("Low", "P4"): ("Mostafa", "Sehel Island"),
-}
+HIGH_SCORES = [780, 785, 795, 800]
+LOW_SCORES = [520, 540, 560, 580]
 
 # Identical in every vignette. Announced once on the instructions page.
 STANDING = [
@@ -102,8 +119,8 @@ STANDING = [
 ]
 
 PRACTICE = {
-    "case_id": "PRACTICE", "credit_score": "High", "use_of_funds": "Practice",
-    "framing": "Practice", "purpose_label": "Practice case",
+    "case_id": "PRACTICE", "credit_score": 700, "credit_score_level": "Practice",
+    "use_of_funds": "Practice", "purpose_label": "Practice case",
     "name": "Kareem", "loc": "Aswan",
     "purpose": "He wants to buy a second refrigerator for the shop.",
     "outcome": "Repay",
@@ -118,12 +135,11 @@ REASONS = [
     {"key": "N", "text": "Something else"},
 ]
 
-AMOUNTS = [0, 25000, 50000, 75000, 100000]
-
 CSV_COLUMNS = [
-    "session_id", "participant_id", "timestamp", "language", "round_index",
-    "case_id", "credit_score", "use_of_funds", "framing", "purpose_label",
-    "applicant_name", "decision", "approved_amount", "reason_choice",
+    "session_id", "participant_id", "timestamp", "consent_given", "round_index",
+    "case_id", "credit_score", "credit_score_level", "use_of_funds", "purpose_label",
+    "applicant_name", "decision", "repayment_probability",
+    "business_success_probability", "reason_choice",
     "true_default_prob", "outcome", "points", "seconds_on_round",
 ]
 
@@ -135,24 +151,36 @@ SESSIONS = {}
 DISK_CSV = os.environ.get("DATA_FILE", "decisions.csv")
 
 
-def build_cases(seed):
+def build_cases(seed, participant_id):
     rng = random.Random(seed)
     cases = []
-    for score in ("High", "Low"):
-        for p in PURPOSES:
-            name, loc = NAMES[(score, p["code"])]
-            cases.append({
-                "case_id": f"{score[0]}-{p['code']}",
-                "credit_score": score,
-                "use_of_funds": p["use"],
-                "framing": p["framing"],
-                "purpose_label": p["label"],
-                "purpose": p["text"],
-                "name": name, "loc": loc,
-                "true_default_prob": DEFAULT_PROB[score],
-                # Outcome fixed BEFORE any decision is made.
-                "outcome": "Default" if rng.random() < DEFAULT_PROB[score] else "Repay",
-            })
+    # IDs 01/03 receive pattern A; IDs 02/04 receive its complement. Within
+    # productive and non-productive stories, every participant gets two high
+    # and two low scores. Across the four-person pilot every story appears
+    # twice with a high score and twice with a low score.
+    pattern_a = ["High", "High", "Low", "Low", "High", "High", "Low", "Low"]
+    levels = pattern_a if int(participant_id) % 2 else [
+        "Low" if level == "High" else "High" for level in pattern_a
+    ]
+    high_i = low_i = 0
+    for story, level in zip(STORIES, levels):
+        if level == "High":
+            score = HIGH_SCORES[high_i]
+            high_i += 1
+        else:
+            score = LOW_SCORES[low_i]
+            low_i += 1
+        cases.append({
+            "case_id": f"{story['code']}-{level[0]}",
+            "credit_score": score,
+            "credit_score_level": level,
+            "use_of_funds": story["use"],
+            "purpose_label": story["label"],
+            "purpose": story["text"],
+            "name": story["name"], "loc": story["loc"],
+            "true_default_prob": DEFAULT_PROB[level],
+            "outcome": "Default" if rng.random() < DEFAULT_PROB[level] else "Repay",
+        })
     rng.shuffle(cases)
     for i, c in enumerate(cases, start=1):
         c["round_index"] = i
@@ -257,6 +285,15 @@ START_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       <p class="muted" style="margin:7px 0 0">It is on the card at your seat.</p>
       {% if not available %}<p class="muted">All four numbers are in use. Tell the researcher.</p>{% endif %}
     </div>
+    <div class="card" style="padding:14px">
+      <label style="display:flex;gap:10px;align-items:flex-start;margin:0;font-weight:500">
+        <input type="checkbox" name="consent" value="yes" required
+               style="width:18px;height:18px;margin-top:2px;flex:0 0 auto">
+        <span>I am at least 18 years old. I have read the consent information
+        provided by the researcher, I understand that participation is voluntary,
+        and I agree to take part in this study.</span>
+      </label>
+    </div>
     <button class="btn wide" type="submit">Start</button>
   </form>
 </div></body></html>"""
@@ -336,7 +373,8 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 
       <p class="eyebrow" style="margin-top:20px">Only two things differ</p>
       <div class="card" style="padding:13px 15px">
-        <p style="margin:0 0 7px"><strong>1. The credit score</strong> &mdash; High or Low.</p>
+        <p style="margin:0 0 7px"><strong>1. The credit score</strong> &mdash; a number
+        between 300 and 850; a higher number indicates a stronger credit history.</p>
         <p style="margin:0"><strong>2. The reason the applicant gives</strong> for wanting
         the loan.</p>
       </div>
@@ -348,13 +386,12 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
       <ol class="steps">
         <li>Read the credit score and the stated reason.</li>
         <li>Press <span class="kbd">A</span>to approve or <span class="kbd">R</span>to reject.</li>
-        <li>If you approve, choose an amount &mdash; keys <span class="kbd">1</span>to<span class="kbd">5</span>.</li>
+        <li>Estimate the chance of repayment and business success (0&ndash;100%).</li>
         <li>Choose the one factor that mattered most &mdash; keys <span class="kbd">Z</span>to<span class="kbd">N</span>.</li>
         <li>Press <span class="kbd">&crarr;</span>for the next application.</li>
       </ol>
       <p class="muted" style="margin:9px 0 0">You can click instead of using the keys.
-      After each decision you find out whether that applicant repaid; it appears at the
-      top of the next screen.</p>
+      The repayment outcome is revealed only after all eight decisions.</p>
 
       <p class="eyebrow" style="margin-top:20px">Points you earn</p>
       <div class="payrow">
@@ -445,9 +482,21 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <button class="btn" id="b-app" onclick="pickDec('Approve')"><span class="kbd">A</span>Approve</button>
         <button class="btn" id="b-rej" onclick="pickDec('Reject')"><span class="kbd">R</span>Reject</button>
       </div>
-      <div id="amt-wrap" style="display:none;margin-bottom:18px">
-        <p class="eyebrow">Approve how much?</p>
-        <div class="chips" id="amt"></div>
+      <div id="prob-wrap" style="display:none;margin-bottom:18px">
+        <label for="repay-prob">Estimated chance this applicant repays the loan</label>
+        <div style="display:grid;grid-template-columns:1fr 88px;gap:10px;align-items:center;margin-bottom:12px">
+          <input id="repay-prob" type="range" min="0" max="100" step="5" value="50"
+                 oninput="syncProb('repay')">
+          <input id="repay-num" type="number" min="0" max="100" step="5" value="50"
+                 oninput="syncProb('repay','number')" aria-label="Repayment probability percent">
+        </div>
+        <label for="success-prob">Estimated chance the applicant's business succeeds</label>
+        <div style="display:grid;grid-template-columns:1fr 88px;gap:10px;align-items:center">
+          <input id="success-prob" type="range" min="0" max="100" step="5" value="50"
+                 oninput="syncProb('success')">
+          <input id="success-num" type="number" min="0" max="100" step="5" value="50"
+                 oninput="syncProb('success','number')" aria-label="Business success probability percent">
+        </div>
       </div>
       <div id="rsn-wrap" style="display:none">
         <p class="eyebrow">Single most important factor</p>
@@ -480,11 +529,10 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <script>
 const CASES    = {{ cases_json|safe }};
 const PRACTICE = {{ practice_json|safe }};
-const AMOUNTS  = {{ amounts_json|safe }};
 const REASONS  = {{ reasons_json|safe }};
 const SID      = "{{ sid }}";
 
-let idx=-1, dec=null, amt=null, rsn=null, total=0, tRound=0, prev=null;
+let idx=-1, dec=null, repayProb=50, successProb=50, rsn=null, total=0, tRound=0;
 const queue=[];
 
 function go(id){
@@ -512,15 +560,7 @@ function checkAnswers(){
   }
 }
 
-/* ---- build the fixed control widgets once ---- */
-const amtBox=document.getElementById('amt');
-AMOUNTS.forEach((v,i)=>{
-  const b=document.createElement('button');b.className='btn ghost';
-  b.innerHTML='<span class="kbd">'+(i+1)+'</span>'+v.toLocaleString()+' EGP';
-  b.onclick=()=>{amt=v;[...amtBox.children].forEach(c=>c.classList.remove('sel'));
-    b.classList.add('sel');gate();};
-  amtBox.appendChild(b);
-});
+/* ---- build the fixed deciding-factor controls once ---- */
 const rsnBox=document.getElementById('rsn');
 REASONS.forEach(r=>{
   const b=document.createElement('button');b.className='btn ghost';
@@ -532,6 +572,16 @@ REASONS.forEach(r=>{
 
 function cur(){return idx<0?PRACTICE:CASES[idx];}
 function isPractice(){return idx<0;}
+
+function syncProb(which,source){
+  const slider=document.getElementById(which+'-prob');
+  const number=document.getElementById(which+'-num');
+  let value=source==='number'?Number(number.value):Number(slider.value);
+  value=Math.max(0,Math.min(100,Number.isFinite(value)?value:50));
+  slider.value=value;number.value=value;
+  if(which==='repay')repayProb=value;else successProb=value;
+  gate();
+}
 
 /* ---- per-application countdown: 60s, then a warning + 30s, soft (never auto-submits) ---- */
 let timerIv=null;
@@ -576,21 +626,19 @@ function render(){
   document.getElementById('r-score').textContent = c.credit_score;
   document.getElementById('r-purpose').textContent = c.purpose;
 
-  const bn=document.getElementById('r-banner');
-  bn.innerHTML = prev
-    ? '<div class="banner fade">Previous applicant '
-      + (prev.outcome==='Repay'?'repaid':'defaulted') + '. '
-      + (prev.points>0?'+':'') + prev.points + ' points.</div>'
-    : '';
+  document.getElementById('r-banner').innerHTML = '';
   document.getElementById('running').textContent =
     isPractice() ? '' : 'Running points: '+total;
 
-  dec=null;amt=null;rsn=null;
+  dec=null;repayProb=50;successProb=50;rsn=null;
   document.getElementById('b-app').classList.remove('sel');
   document.getElementById('b-rej').classList.remove('sel');
-  document.getElementById('amt-wrap').style.display='none';
+  document.getElementById('prob-wrap').style.display='none';
   document.getElementById('rsn-wrap').style.display='none';
-  [...amtBox.children].forEach(c=>c.classList.remove('sel'));
+  document.getElementById('repay-prob').value=50;
+  document.getElementById('repay-num').value=50;
+  document.getElementById('success-prob').value=50;
+  document.getElementById('success-num').value=50;
   [...rsnBox.children].forEach(c=>c.classList.remove('sel'));
   document.getElementById('nextlbl').textContent =
     isPractice() ? 'Start the eight applications'
@@ -604,30 +652,31 @@ function pickDec(d){
   dec=d;
   document.getElementById('b-app').classList.toggle('sel',d==='Approve');
   document.getElementById('b-rej').classList.toggle('sel',d==='Reject');
-  document.getElementById('amt-wrap').style.display = d==='Approve'?'block':'none';
+  document.getElementById('prob-wrap').style.display='block';
   document.getElementById('rsn-wrap').style.display='block';
-  if(d==='Reject'){amt=0;[...amtBox.children].forEach(c=>c.classList.remove('sel'));}
   gate();
 }
 function gate(){
-  const ok = dec && rsn!==null && (dec==='Reject'||amt!==null);
+  const ok = dec && rsn!==null
+    && repayProb>=0 && repayProb<=100 && successProb>=0 && successProb<=100;
   document.getElementById('nextbtn').disabled = !ok;
 }
 
 function submitRound(){
   if(document.getElementById('nextbtn').disabled)return;
   const c=cur();
-  if(isPractice()){prev=null;idx=0;render();return;}
+  if(isPractice()){idx=0;render();return;}
   const pts = dec==='Approve' ? (c.outcome==='Default'?-100:100)
                               : (c.outcome==='Default'?50:-50);
   total+=pts;
   save({session_id:SID,round_index:c.round_index,case_id:c.case_id,
-    credit_score:c.credit_score,use_of_funds:c.use_of_funds,framing:c.framing,
+    credit_score:c.credit_score,credit_score_level:c.credit_score_level,
+    use_of_funds:c.use_of_funds,
     purpose_label:c.purpose_label,applicant_name:c.name,decision:dec,
-    approved_amount:(dec==='Approve'?amt:0),reason_choice:rsn,
+    repayment_probability:repayProb,business_success_probability:successProb,
+    reason_choice:rsn,
     true_default_prob:c.true_default_prob,outcome:c.outcome,points:pts,
     seconds_on_round:Math.round((Date.now()-tRound)/1000)});
-  prev={outcome:c.outcome,points:pts};
   if(idx===CASES.length-1){finish();return;}
   idx++;render();
 }
@@ -669,7 +718,6 @@ document.addEventListener('keydown',e=>{
   const k=e.key.toUpperCase();
   if(k==='A'){pickDec('Approve');e.preventDefault();return;}
   if(k==='R'){pickDec('Reject');e.preventDefault();return;}
-  if(dec==='Approve'&&/^[1-5]$/.test(k)){amtBox.children[+k-1].click();e.preventDefault();return;}
   if(dec){const i=REASONS.findIndex(r=>r.key===k);
     if(i>=0){rsnBox.children[i].click();e.preventDefault();return;}}
   if(e.key==='Enter'){submitRound();e.preventDefault();}
@@ -718,13 +766,16 @@ def start():
     error = None
     if request.method == "POST":
         pid = request.form.get("participant_id", "")
-        if pid not in available:
+        consent = request.form.get("consent") == "yes"
+        if not consent:
+            error = "Please provide consent before starting."
+        elif pid not in available:
             error = "That number is already in use. Please pick another."
         else:
             sid = f"S{pid}-{secrets.token_hex(3)}"
             SESSIONS[sid] = {
-                "session_id": sid, "participant_id": pid, "language": "EN",
-                "cases": build_cases(seed=f"{pid}{sid}"), "rows": [],
+                "session_id": sid, "participant_id": pid, "consent_given": True,
+                "cases": build_cases(seed=f"{pid}{sid}", participant_id=pid), "rows": [],
                 "started_at": time.time(), "finished_at": None,
                 "total_points": None, "bonus_krw": None,
                 "selected_round_index": None,
@@ -744,7 +795,6 @@ def game():
         GAME_HTML, css=CSS, sid=sid, pid=s["participant_id"], standing=STANDING,
         cases_json=json.dumps(s["cases"]),
         practice_json=json.dumps(PRACTICE),
-        amounts_json=json.dumps(AMOUNTS),
         reasons_json=json.dumps(REASONS),
     )
 
@@ -759,10 +809,12 @@ def api_round():
         return jsonify({"ok": True, "duplicate": True})
     row = {
         "session_id": s["session_id"], "participant_id": s["participant_id"],
-        "timestamp": datetime.now().isoformat(timespec="seconds"), "language": "EN",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "consent_given": s["consent_given"],
     }
-    for k in ("round_index", "case_id", "credit_score", "use_of_funds", "framing",
-              "purpose_label", "applicant_name", "decision", "approved_amount",
+    for k in ("round_index", "case_id", "credit_score", "credit_score_level",
+              "use_of_funds", "purpose_label", "applicant_name", "decision",
+              "repayment_probability", "business_success_probability",
               "reason_choice", "true_default_prob", "outcome", "points",
               "seconds_on_round"):
         row[k] = d.get(k)
@@ -780,7 +832,7 @@ def api_finish():
     for row in (d.get("pending") or []):
         if not any(r["round_index"] == row.get("round_index") for r in s["rows"]):
             row.update({"session_id": s["session_id"], "participant_id": s["participant_id"],
-                        "language": "EN",
+                        "consent_given": s["consent_given"],
                         "timestamp": datetime.now().isoformat(timespec="seconds")})
             s["rows"].append(row)
             append_disk(row)
@@ -865,6 +917,7 @@ th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-tra
 {% if n_unfinished %}&middot; {{ n_unfinished }} still in progress{% endif %}</p>
 <p>
   <a class="btn" href="/admin/report.csv?key={{key}}">Download results table (CSV)</a>
+  &nbsp; <button class="btn ghost" onclick="window.print()">Print / Save charts as PDF</button>
   &nbsp; <a class="btn ghost" href="/admin?key={{key}}">Back to live monitor</a>
 </p>
 <hr class="rule">
@@ -914,7 +967,7 @@ def _hypothesis_summary():
     for s in SESSIONS.values():
         rows.extend(s.get("rows", []))
 
-    def is_high(r): return str(r.get("credit_score", "")).strip().lower() == "high"
+    def is_high(r): return str(r.get("credit_score_level", "")).strip().lower() == "high"
     def is_prod(r): return str(r.get("use_of_funds", "")).strip().lower().startswith("prod")
     def is_appr(r): return str(r.get("decision", "")).strip().lower() == "approve"
 
@@ -928,8 +981,8 @@ def _hypothesis_summary():
     low = rate([r for r in rows if not is_high(r)])
     prod = rate([r for r in rows if is_prod(r)])
     nonp = rate([r for r in rows if not is_prod(r)])
-    cellA = rate([r for r in rows if is_high(r) and not is_prod(r)])   # score yes, capacity no
-    cellB = rate([r for r in rows if (not is_high(r)) and is_prod(r)])  # capacity yes, score no
+    cellA = rate([r for r in rows if is_high(r) and not is_prod(r)])
+    cellB = rate([r for r in rows if (not is_high(r)) and is_prod(r)])
 
     def eff(x, y):
         return round(x["pct"] - y["pct"], 1)
@@ -940,14 +993,14 @@ def _hypothesis_summary():
           "r2pct": low["pct"], "a2": low["a"], "n2": low["n"],
           "effect_pp": eff(high, low), "effect_desc": "higher approval for High score.",
           "supports": eff(high, low) > 0}
-    h2 = {"title": "H2 — Prospective repayment capacity", "pred": "Productive (income-generating) use is approved more than non-productive use.",
+    h2 = {"title": "H2 — Stated loan purpose", "pred": "Productive (income-generating) purposes are approved more than personal purposes.",
           "g1": "Productive use", "g2": "Non-productive use",
           "r1pct": prod["pct"], "a1": prod["a"], "n1": prod["n"],
           "r2pct": nonp["pct"], "a2": nonp["a"], "n2": nonp["n"],
           "effect_pp": eff(prod, nonp), "effect_desc": "higher approval for productive use.",
           "supports": eff(prod, nonp) > 0}
-    h3 = {"title": "H3 — Credit-score dominance in conflict", "pred": "When the two signals conflict, credit score wins: High+non-productive is approved more than Low+productive.",
-          "g1": "High score + non-productive", "g2": "Low score + productive",
+    h3 = {"title": "H3 — Credit-score dominance in conflict", "pred": "When the signals conflict, credit score dominates: High+personal is approved more than Low+productive.",
+          "g1": "High score + personal purpose", "g2": "Low score + productive purpose",
           "r1pct": cellA["pct"], "a1": cellA["a"], "n1": cellA["n"],
           "r2pct": cellB["pct"], "a2": cellB["a"], "n2": cellB["n"],
           "effect_pp": eff(cellA, cellB), "effect_desc": "gap between the two conflict cases.",
