@@ -256,7 +256,8 @@ h2{font-size:15px;margin:0 0 8px}
 .muted{color:var(--muted);font-size:13px}
 label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
 select{
-  font:inherit;padding:10px;border:1.5px solid var(--rule);
+  font:inherit;padding:10px;border:1.5px
+ solid var(--rule);
   border-radius:2px;background:var(--card);color:var(--ink);width:100%
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -414,9 +415,9 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   Take the time you need and decide the way you actually would.</p>
 
   <hr class="rule">
-  <p class="muted" style="margin:0 0 12px">Next: two quick questions to confirm the rules,
-  then one practice application that does not count.</p>
-  <button class="btn" onclick="go('s-check')" autofocus>Continue</button>
+  <p class="muted" style="margin:0 0 12px">Next: one practice application that does
+  not count, followed by the eight real applications.</p>
+  <button class="btn" onclick="go('s-round');render()" autofocus>Start practice</button>
 </section>
 
 <!-- ============ COMPREHENSION CHECK ============ -->
@@ -439,7 +440,8 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <div class="chips" id="c2">
       <button class="btn ghost" data-v="a">All eight, averaged</button>
       <button class="btn ghost" data-v="b">One, drawn at random</button>
-      <button class="btn ghost" data-v="c">The best one</button>
+      <button
+ class="btn ghost" data-v="c">The best one</button>
     </div>
   </div>
   <p id="cmsg" class="muted" style="min-height:20px;margin:0 0 12px"></p>
@@ -619,10 +621,10 @@ function startTimer(){
 function render(){
   const c=cur();
   document.getElementById('r-eyebrow').textContent =
-    isPractice() ? 'Practice application — not counted' : 'Application '+(idx+1)+' of 8';
+    isPractice() ? 'Practice application â€” not counted' : 'Application '+(idx+1)+' of 8';
   document.getElementById('prog').innerHTML =
     CASES.map((_,i)=>'<div class="pip '+(idx>i?'done':(idx===i?'now':''))+'"></div>').join('');
-  document.getElementById('r-who').textContent = c.name+' · '+c.loc;
+  document.getElementById('r-who').textContent = c.name+' Â· '+c.loc;
   document.getElementById('r-score').textContent = c.credit_score;
   document.getElementById('r-purpose').textContent = c.purpose;
 
@@ -668,6 +670,7 @@ function submitRound(){
   if(isPractice()){idx=0;render();return;}
   const pts = dec==='Approve' ? (c.outcome==='Default'?-100:100)
                               : (c.outcome==='Default'?50:-50);
+
   total+=pts;
   save({session_id:SID,round_index:c.round_index,case_id:c.case_id,
     credit_score:c.credit_score,credit_score_level:c.credit_score_level,
@@ -697,16 +700,16 @@ function finish(){
     body:JSON.stringify({session_id:SID,total_points:total,pending:queue})})
     .then(r=>r.json()).then(d=>{
       document.getElementById('d-line').textContent =
-        'Application '+d.selected_round_index+' — '+d.applicant_name;
+        'Application '+d.selected_round_index+' â€” '+d.applicant_name;
       document.getElementById('d-detail').textContent =
-        d.decision+' · '+d.outcome+' · '
+        d.decision+' Â· '+d.outcome+' Â· '
         +(d.selected_round_points>0?'+':'')+d.selected_round_points+' points';
       document.getElementById('d-krw').textContent = d.bonus_krw.toLocaleString()+' KRW';
       document.getElementById('d-total').textContent = 'Total points across all 8: '+d.total_points;
       go('s-done');
     }).catch(()=>{
       go('s-done');
-      document.getElementById('d-krw').textContent='—';
+      document.getElementById('d-krw').textContent='â€”';
       document.getElementById('d-detail').textContent='Show this screen to the researcher.';
     });
 }
@@ -743,9 +746,9 @@ th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-tra
 {% for r in rows %}<tr{% if r.avg and r.avg>75 %} class="slow"{% endif %}>
 <td class="mono">{{r.pid}}</td><td class="mono">{{r.n}} / 8</td>
 <td class="mono">{{r.elapsed}}</td>
-<td class="mono">{{ (r.avg|round(0)|int ~ ' s') if r.avg else '—' }}</td>
+<td class="mono">{{ (r.avg|round(0)|int ~ ' s') if r.avg else 'â€”' }}</td>
 <td class="mono">{{r.approved}}</td><td class="mono">{{r.points}}</td>
-<td class="mono">{{ (r.bonus ~ ' KRW') if r.bonus is not none else '—' }}</td>
+<td class="mono">{{ (r.bonus ~ ' KRW') if r.bonus is not none else 'â€”' }}</td>
 <td>{{r.status}}</td></tr>{% endfor %}
 </table>
 <hr class="rule">
@@ -896,7 +899,8 @@ def _fmt(sec):
 REPORT_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <title>Results &middot; hypotheses</title><style>{{css|safe}}
 table{border-collapse:collapse;width:100%;font-size:13.5px;margin:6px 0 4px}
-th,td{border:1px solid var(--rule);padding:7px 9px;text-align:left}
+th,td{border:1px
+ solid var(--rule);padding:7px 9px;text-align:left}
 th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-transform:uppercase}
 .hblock{border:1px solid var(--rule);border-left:3px solid var(--ink);border-radius:2px;padding:16px 18px;margin:16px 0;background:var(--card)}
 .hblock h2{margin:0 0 2px;font-size:17px}
@@ -926,7 +930,7 @@ th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-tra
 <table><tr><th>Participant</th><th>Decisions</th><th>Approved</th><th>Total points</th><th>Bonus</th><th>Status</th></tr>
 {% for p in payoffs %}<tr>
 <td class="mono">{{p.pid}}</td><td class="mono">{{p.n}} / 8</td><td class="mono">{{p.approved}}</td>
-<td class="mono">{{p.points}}</td><td class="mono">{{ (p.bonus ~ ' KRW') if p.bonus is not none else '—' }}</td>
+<td class="mono">{{p.points}}</td><td class="mono">{{ (p.bonus ~ ' KRW') if p.bonus is not none else 'â€”' }}</td>
 <td>{{p.status}}</td></tr>{% endfor %}
 </table>
 
@@ -987,19 +991,19 @@ def _hypothesis_summary():
     def eff(x, y):
         return round(x["pct"] - y["pct"], 1)
 
-    h1 = {"title": "H1 — Credit score", "pred": "High credit score is approved more than Low.",
+    h1 = {"title": "H1 â€” Credit score", "pred": "High credit score is approved more than Low.",
           "g1": "High credit score", "g2": "Low credit score",
           "r1pct": high["pct"], "a1": high["a"], "n1": high["n"],
           "r2pct": low["pct"], "a2": low["a"], "n2": low["n"],
           "effect_pp": eff(high, low), "effect_desc": "higher approval for High score.",
           "supports": eff(high, low) > 0}
-    h2 = {"title": "H2 — Stated loan purpose", "pred": "Productive (income-generating) purposes are approved more than personal purposes.",
+    h2 = {"title": "H2 â€” Stated loan purpose", "pred": "Productive (income-generating) purposes are approved more than personal purposes.",
           "g1": "Productive use", "g2": "Non-productive use",
           "r1pct": prod["pct"], "a1": prod["a"], "n1": prod["n"],
           "r2pct": nonp["pct"], "a2": nonp["a"], "n2": nonp["n"],
           "effect_pp": eff(prod, nonp), "effect_desc": "higher approval for productive use.",
           "supports": eff(prod, nonp) > 0}
-    h3 = {"title": "H3 — Credit-score dominance in conflict", "pred": "When the signals conflict, credit score dominates: High+personal is approved more than Low+productive.",
+    h3 = {"title": "H3 â€” Credit-score dominance in conflict", "pred": "When the signals conflict, credit score dominates: High+personal is approved more than Low+productive.",
           "g1": "High score + personal purpose", "g2": "Low score + productive purpose",
           "r1pct": cellA["pct"], "a1": cellA["a"], "n1": cellA["n"],
           "r2pct": cellB["pct"], "a2": cellB["a"], "n2": cellB["n"],
@@ -1095,7 +1099,8 @@ def admin_csv():
     w = csv.DictWriter(buf, fieldnames=CSV_COLUMNS)
     w.writeheader()
     for s in sorted(SESSIONS.values(), key=lambda x: x["participant_id"]):
-        for r in sorted(s["rows"], key=lambda x: x["round_index"]):
+        for r in sorted(s["rows"], key=lambda x:
+ x["round_index"]):
             w.writerow({k: r.get(k, "") for k in CSV_COLUMNS})
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     return Response(
