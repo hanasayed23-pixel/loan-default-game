@@ -62,7 +62,7 @@ def load_and_prepare(csv_paths):
     ).astype(int)
     df["participant_id"] = df["participant_id"].astype(str)
 
-    for col in ("credit_score", "repayment_probability", "business_success_probability"):
+    for col in ("repayment_probability", "business_success_probability"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -254,7 +254,8 @@ def lpm_with_wald(df):
 
     # Wald test: b1 - b2 = 0
     R = np.zeros(k)
-    R[len(pids)] = 1.0
+    R[len(pids)]
+ = 1.0
     R[len(pids) + 1] = -1.0
     diff = float(R @ beta)
     var_diff = float(R @ V @ R)
