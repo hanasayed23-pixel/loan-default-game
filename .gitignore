@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 sessions.csv
+decisions.csv
 .claude/
 .env
