@@ -1,839 +1,1205 @@
-r"""
-app.py - Loan Default Game (English only)
-2x2x2 within-subject factorial | 8 rounds | ~30-40 s per round | RIS payment
-
-Design targets
-  * ONE page load for all 8 rounds. Round advance is client-side, so a slow
-    free-tier server cannot add latency between decisions.
-  * Every round on a single screen: applicant card + decision + amount + reason.
-  * Previous round's outcome appears as an inline banner on the next card.
-  * Keyboard shortcuts for motor speed:
-        A / R           approve / reject
-        1-5             approved amount
-        Z X C V B N     deciding factor
-        Enter           next application
-    (Reason keys deliberately avoid A and R, which are taken by the decision.)
-
-Scientific constraints deliberately enforced in the markup
-  * Credit score High and Low are rendered with IDENTICAL styling. Colour-coding
-    them would add a valence cue on top of the manipulated text.
-  * All four purposes are rendered with identical styling and comparable length.
-  * Approve and Reject are visually symmetric; only label and position differ.
-  * The eight repay/default outcomes are drawn ONCE at session start, before any
-    decision is made, so no outcome can depend on the choice.
-  * No countdown timer anywhere. Time pressure would be an uncontrolled
-    treatment. Pace is monitored by the researcher on /admin instead.
-
-Run locally:  py app.py     ->  http://127.0.0.1:5000
-Admin:        http://127.0.0.1:5000/admin?key=<ADMIN_KEY>
-"""
-
 import csv
-import io
-import json
 import os
 import random
-import secrets
-import time
+import uuid
 from datetime import datetime
 
-from flask import (Flask, Response, jsonify, redirect, render_template_string,
-                   request, session, url_for)
+import requests
+from flask import Flask, abort, redirect, render_template, request, session, url_for
+from jinja2 import DictLoader
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
+app.secret_key = os.environ.get("SECRET_KEY", "loan-default-game-dev-secret-key")
 
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "kdi2026")
-PARTICIPANT_IDS = ["01", "02", "03", "04"]
+# On Render.com, set DATA_DIR to the mount path of an attached persistent disk
+# (e.g. /var/data) so sessions.csv survives deploys/restarts. Defaults to the
+# app folder for local development.
+DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(DATA_DIR, exist_ok=True)
+CSV_PATH = os.path.join(DATA_DIR, "sessions.csv")
+
+# Session-result email (Resend API, since Render's free tier blocks outbound
+# SMTP but allows HTTPS). The API key is never hardcoded -- set the
+# RESEND_API_KEY environment variable to enable sending.
+RESEND_API_URL = "https://api.resend.com/emails"
+EMAIL_SENDER = "onboarding@resend.dev"
+EMAIL_RECIPIENT = "hannahmohamed.sayed23@gmail.com"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+
+# Admin results dashboard (/admin?key=...). Unset by default, which keeps the
+# route 404ing -- set the ADMIN_KEY environment variable to enable it.
+ADMIN_KEY = os.environ.get("ADMIN_KEY")
 
 # ---------------------------------------------------------------------------
-# Design: the 2x2x2 factorial
+# Case data: 2 (credit score) x 5 (situation) factorial design = 10 cases.
+# Loan amount, experience, income, guarantor, field investigation, literacy,
+# and beneficiary are identical across every case by design -- only the
+# credit score level and the situation narrative vary.
 # ---------------------------------------------------------------------------
 
-DEFAULT_PROB = {"High": 0.20, "Low": 0.45}     # depends on credit score ONLY
-MAX_BONUS_KRW = 5000
+FIXED_FIELDS = {
+    "loan_amount": 100000,
+    "experience_years": 5,
+    "monthly_income": {"en": "4,000 EGP", "ar": "٤,٠٠٠ جنيه"},
+    "guarantor": {"en": "Brother", "ar": "الأخ"},
+    "field_investigation": {
+        "en": "Normal reputation, no negative remarks",
+        "ar": "سمعة عادية، مفيش ملاحظات سلبية",
+    },
+    "literacy": {"en": "Can read and write", "ar": "يقرأ ويكتب"},
+    "beneficiary": {"en": "No", "ar": "لا"},
+}
 
-PURPOSES = [
+# Hidden default probabilities per situation x credit score level. Never
+# shown to the player -- only used to determine the post-decision outcome.
+SITUATIONS = [
     {
-        "code": "P1", "use": "Productive", "framing": "Planned",
-        "label": "Increase shop stock to raise sales",
-        "text": "He wants to increase the shop's stock to raise sales.",
+        "type": "neutral",
+        "en": "Grocery store owner, looking to restock inventory.",
+        "ar": "صاحب محل بقالة، عايز يجدد المخزون بتاع المحل.",
+        "default_high": 0.15,
+        "default_low": 0.35,
     },
     {
-        "code": "P2", "use": "Productive", "framing": "Urgent",
-        "label": "Replace stolen shop fittings to reopen",
-        "text": "The shop's display fridge and scale were stolen last month; "
-                "he needs to replace them to reopen.",
+        "type": "legal_judgment",
+        "en": "Carpentry workshop owner. Has an outstanding court judgment for an unpaid debt to a wood supplier.",
+        "ar": "صاحب ورشة نجارة. عليه حكم قضائي بسبب دين متأخر لمورد خشب.",
+        "default_high": 0.40,
+        "default_low": 0.60,
     },
     {
-        "code": "P3", "use": "Non-productive", "framing": "Planned",
-        "label": "Daughter's wedding trousseau",
-        "text": "He needs the loan to cover his daughter's wedding trousseau next month.",
+        "type": "sick_child",
+        "en": "Clothing shop owner. Her son needs urgent surgery, and part of the loan will go toward his treatment.",
+        "ar": "صاحبة محل ملابس. ابنها محتاج عملية عاجلة، وجزء من القرض هيتصرف على العلاج.",
+        "default_high": 0.25,
+        "default_low": 0.45,
     },
     {
-        "code": "P4", "use": "Non-productive", "framing": "Urgent",
-        "label": "Son's urgent surgery",
-        "text": "His son needs urgent surgery; the loan will go toward the treatment.",
+        "type": "expansion",
+        "en": "Bakery owner. The business has grown steadily over the past year, and he wants to open a second branch.",
+        "ar": "صاحب مخبز. المشروع بينمو بثبات من سنة، وعايز يفتح فرع تاني.",
+        "default_high": 0.05,
+        "default_low": 0.25,
+    },
+    {
+        "type": "family_obligation",
+        "en": "Hair salon owner. She needs part of the loan to cover her daughter's upcoming wedding expenses next month.",
+        "ar": "صاحبة صالون تصفيف شعر. محتاجة جزء من القرض عشان تجهيز جواز بنتها الشهر الجاي.",
+        "default_high": 0.20,
+        "default_low": 0.40,
     },
 ]
 
-NAMES = {
-    ("High", "P1"): ("Mahmoud", "Kom Ombo"),
-    ("High", "P2"): ("Atef", "Daraw"),
-    ("High", "P3"): ("Ragab", "Edfu"),
-    ("High", "P4"): ("Sayed", "Nasr El-Nuba"),
-    ("Low", "P1"): ("Ashraf", "El-Sebaeya"),
-    ("Low", "P2"): ("Yasser", "Abu El-Rish"),
-    ("Low", "P3"): ("Hassan", "El-Shallal"),
-    ("Low", "P4"): ("Mostafa", "Sehel Island"),
+CASES = []
+_case_id = 1
+for _situation in SITUATIONS:
+    for _level in ("high", "low"):
+        _default_prob = _situation[f"default_{_level}"]
+        CASES.append({
+            **FIXED_FIELDS,
+            "id": _case_id,
+            "situation_type": _situation["type"],
+            "situation": {"en": _situation["en"], "ar": _situation["ar"]},
+            "credit_score_level": _level,
+            "repay_probability": 1 - _default_prob,
+        })
+        _case_id += 1
+
+# ---------------------------------------------------------------------------
+# Translations
+# ---------------------------------------------------------------------------
+
+TRANSLATIONS = {
+    "en": {
+        "title": "Loan Default Game",
+        "how_to_play_title": "How to Play",
+        "how_to_play_p1": "You'll play the role of a loan officer at a microfinance bank. You'll review 10 loan applications, one at a time.",
+        "how_to_play_p2": "Each one shows a credit score (High or Low) and a short situation describing the applicant's circumstances.",
+        "how_to_play_p3": "For each one, decide: Approve or Reject — just as you would in your actual work.",
+        "how_to_play_p4": "After each decision, you'll be asked what mattered most in your choice.",
+        "how_to_play_p5": "Correct decisions earn KRW, up to 10,000 KRW across all 10.",
+        "how_to_play_p6": "There are no right or wrong answers — take your time.",
+        "start_game": "Start Game",
+        "case_label": "Case {n} of {total}",
+        "time_left": "Time left",
+        "time_warning": "\u23f1 Time is almost up \u2014 you have 30 extra seconds. Please make your decision.",
+        "loan_amount": "Loan Amount",
+        "egp": "EGP",
+        "credit_score": "Credit Score",
+        "credit_score_high": "High",
+        "credit_score_low": "Low",
+        "experience": "Years of Experience",
+        "years_suffix": "years",
+        "monthly_income": "Monthly Income",
+        "beneficiary": "Third-party Beneficiary",
+        "field_investigation": "Field Investigation",
+        "guarantor": "Guarantor",
+        "literacy": "Literacy",
+        "case_column": "Case",
+        "approve": "Approve Loan",
+        "reject": "Reject Loan",
+        "score": "Score",
+        "you_approved": "You approved this loan.",
+        "you_rejected": "You rejected this loan.",
+        "outcome_repay": "The client REPAID the loan.",
+        "outcome_default": "The client DEFAULTED on the loan.",
+        "outcome": "Result",
+        "outcome_repay_short": "Repaid",
+        "outcome_default_short": "Defaulted",
+        "points": "Points this round",
+        "continue": "Continue",
+        "final_title": "Game Over",
+        "summary": "Summary",
+        "play_again": "Play Again",
+        "total_earned": "Total earned",
+        "won": "KRW",
+        "out_of": "out of",
+        "reason_question": "What was the single most important factor in your decision?",
+        "glossary_title": "What do these mean?",
+        "glossary_credit_score": "Credit score: A simple High/Low rating of the applicant's past repayment reliability — High means lower default risk, Low means higher default risk.",
+        "glossary_experience": "How long the applicant has run their business.",
+        "glossary_monthly_income": "The applicant's reported monthly earnings.",
+        "glossary_guarantor": "How close/trusted the person backing the loan is to the applicant.",
+        "glossary_field_investigation": "What the bank's own visit found about the applicant's reputation and business location.",
+        "glossary_beneficiary": "Whether someone else benefits from the loan besides the applicant.",
+        "glossary_literacy": "Whether the applicant can read and write.",
+    },
+    "ar": {
+        "title": "لعبة تعثر السداد",
+        "how_to_play_title": "إزاي تلعب",
+        "how_to_play_p1": "هتلعب دور موظف قروض في بنك تمويل صغير. هتشوف 10 طلبات قروض، واحد بعد التاني.",
+        "how_to_play_p2": "كل طلب فيه درجة ائتمانية (مرتفعة أو منخفضة) وموقف قصير عن ظروف صاحب المشروع.",
+        "how_to_play_p3": "لكل طلب: قرر توافق ولا ترفض، زي ما كنت هتقرر فعلاً في شغلك.",
+        "how_to_play_p4": "بعد كل قرار، هيسألك إيه أهم سبب خلاك تقرر كده.",
+        "how_to_play_p5": "القرارات الصح بتكسبك وون كوري، لحد 10,000 وون على الـ10 كلهم.",
+        "how_to_play_p6": "مفيش إجابة صح أو غلط — خد وقتك.",
+        "start_game": "ابدأ اللعبة",
+        "case_label": "الحالة {n} من {total}",
+        "time_left": "الوقت المتبقي",
+        "time_warning": "\u23f1 الوقت قرب يخلص \u2014 عندك ٣٠ ثانية إضافية. من فضلك اتخذ قرارك.",
+        "loan_amount": "مبلغ القرض",
+        "egp": "جنيه",
+        "credit_score": "الدرجة الائتمانية",
+        "credit_score_high": "مرتفعة",
+        "credit_score_low": "منخفضة",
+        "experience": "سنوات الخبرة",
+        "years_suffix": "سنين",
+        "monthly_income": "الدخل الشهري",
+        "beneficiary": "مستفيد من الغير",
+        "field_investigation": "تقرير المعاينة الميدانية",
+        "guarantor": "الضامن",
+        "literacy": "محو الأمية",
+        "case_column": "الحالة",
+        "approve": "موافقة على القرض",
+        "reject": "رفض القرض",
+        "score": "النقط",
+        "you_approved": "انت وافقت على القرض ده.",
+        "you_rejected": "انت رفضت القرض ده.",
+        "outcome_repay": "العميل سدد القرض.",
+        "outcome_default": "العميل اتعثر ومسددش القرض.",
+        "outcome": "النتيجة",
+        "outcome_repay_short": "سدد",
+        "outcome_default_short": "اتعثر",
+        "points": "نقط الجولة دي",
+        "continue": "كمل",
+        "final_title": "خلصت اللعبة",
+        "summary": "ملخص",
+        "play_again": "العب تاني",
+        "total_earned": "إجمالي المكسب",
+        "won": "وون",
+        "out_of": "من أصل",
+        "reason_question": "إيه أهم عامل أثر في قرارك؟",
+        "glossary_title": "الكلمات دي معناها إيه؟",
+        "glossary_credit_score": "الدرجة الائتمانية: تقييم بسيط (مرتفعة/منخفضة) لموثوقية سداد العميل في الماضي — مرتفعة تعني احتمال تعثر أقل، منخفضة تعني احتمال تعثر أعلى.",
+        "glossary_experience": "من إمتى وهو شغال في مشروعه.",
+        "glossary_monthly_income": "دخل العميل المُصرَّح بيه شهريًا.",
+        "glossary_guarantor": "مدى قرب/ثقة الشخص الضامن للقرض من العميل.",
+        "glossary_field_investigation": "اللي البنك لقاه بنفسه من زيارة سمعة العميل ومكان مشروعه.",
+        "glossary_beneficiary": "هل فيه حد تاني بيستفيد من القرض غير العميل نفسه.",
+        "glossary_literacy": "هل العميل يعرف يقرأ ويكتب.",
+    },
 }
 
-# Identical in every vignette. Announced once on the instructions page.
-STANDING = [
-    ("Loan requested", "100,000 EGP"),
-    ("Business", "Grocery shop"),
-    ("Years in business", "5 years"),
-    ("Monthly income", "4,000 EGP"),
-    ("Guarantor", "Brother"),
-    ("Literacy", "Reads and writes"),
-    ("Field investigation", "Normal reputation, no negative remarks"),
-    ("Third-party beneficiary", "No"),
+CASES_BY_ID = {c["id"]: c for c in CASES}
+
+SCORE_MATRIX = {
+    ("approve", "repay"): 100,
+    ("approve", "default"): -100,
+    ("reject", "repay"): -50,
+    ("reject", "default"): 50,
+}
+
+# Reason options shown after each decision, before the outcome is revealed.
+REASON_OPTIONS = [
+    {"id": "credit_score", "en": "Credit score", "ar": "الدرجة الائتمانية"},
+    {"id": "situation", "en": "The applicant's business situation/story", "ar": "موقف/قصة صاحب المشروع"},
+    {"id": "both", "en": "Both equally", "ar": "الاتنين مع بعض"},
+    {"id": "other", "en": "Something else", "ar": "حاجة تانية"},
 ]
+REASON_IDS = {opt["id"] for opt in REASON_OPTIONS}
 
-PRACTICE = {
-    "case_id": "PRACTICE", "credit_score": "High", "use_of_funds": "Practice",
-    "framing": "Practice", "purpose_label": "Practice case",
-    "name": "Kareem", "loc": "Aswan",
-    "purpose": "He wants to buy a second refrigerator for the shop.",
-    "outcome": "Repay",
-}
 
-REASONS = [
-    {"key": "Z", "text": "Credit score"},
-    {"key": "X", "text": "The stated purpose of the loan"},
-    {"key": "C", "text": "Whether the use generates income to repay"},
-    {"key": "V", "text": "The applicant's personal circumstances"},
-    {"key": "B", "text": "The financial data (income vs instalment)"},
-    {"key": "N", "text": "Something else"},
-]
+def points_to_krw(points):
+    # Maps -100 -> 0 KRW and +100 -> 1000 KRW, so 10 max-score cases total 10,000 KRW.
+    return round(1000 * (points + 100) / 200)
 
-AMOUNTS = [0, 25000, 50000, 75000, 100000]
 
-CSV_COLUMNS = [
-    "session_id", "participant_id", "timestamp", "language", "round_index",
-    "case_id", "credit_score", "use_of_funds", "framing", "purpose_label",
-    "applicant_name", "decision", "approved_amount", "reason_choice",
-    "true_default_prob", "outcome", "points", "seconds_on_round",
-]
+def total_krw_earned(decisions):
+    return sum(d.get("krw", 0) for d in decisions)
+
+
+def t(key):
+    lang = session.get("lang", "en")
+    return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, key)
+
+
+app.jinja_env.globals["t"] = t
 
 # ---------------------------------------------------------------------------
-# In-process store (Render free tier runs a single worker)
+# Templates
 # ---------------------------------------------------------------------------
 
-SESSIONS = {}
-DISK_CSV = os.environ.get("DATA_FILE", "decisions.csv")
-
-
-def build_cases(seed):
-    rng = random.Random(seed)
-    cases = []
-    for score in ("High", "Low"):
-        for p in PURPOSES:
-            name, loc = NAMES[(score, p["code"])]
-            cases.append({
-                "case_id": f"{score[0]}-{p['code']}",
-                "credit_score": score,
-                "use_of_funds": p["use"],
-                "framing": p["framing"],
-                "purpose_label": p["label"],
-                "purpose": p["text"],
-                "name": name, "loc": loc,
-                "true_default_prob": DEFAULT_PROB[score],
-                # Outcome fixed BEFORE any decision is made.
-                "outcome": "Default" if rng.random() < DEFAULT_PROB[score] else "Repay",
-            })
-    rng.shuffle(cases)
-    for i, c in enumerate(cases, start=1):
-        c["round_index"] = i
-    return cases
-
-
-def points_for(decision, outcome):
-    if decision == "Approve":
-        return -100 if outcome == "Default" else 100
-    return 50 if outcome == "Default" else -50
-
-
-def bonus_krw(points):
-    return int(MAX_BONUS_KRW * (points + 100) / 200)
-
-
-def append_disk(row):
-    try:
-        new = not os.path.exists(DISK_CSV)
-        with open(DISK_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-            if new:
-                w.writeheader()
-            w.writerow({k: row.get(k, "") for k in CSV_COLUMNS})
-    except Exception:
-        pass    # memory + the emailed copy remain authoritative
-
-
-# ---------------------------------------------------------------------------
-# Shared CSS
-# ---------------------------------------------------------------------------
-
-CSS = """
-:root{
-  --paper:#EDEFEA; --card:#FBFBF8; --ink:#1C2B4A; --rule:#C9CDC4;
-  --muted:#6E7581; --bronze:#8A6A2F; --band:#E3E6DE;
-}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0}
-body{
-  background:var(--paper); color:var(--ink);
-  font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
-  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
-}
-.mono{font-family:ui-monospace,"Cascadia Mono","Segoe UI Mono","DejaVu Sans Mono",monospace}
-.wrap{max-width:1080px;margin:0 auto;padding:22px 20px 44px}
-.rule{height:1px;background:var(--rule);border:0;margin:16px 0}
-h1{font-size:24px;letter-spacing:-.015em;margin:0 0 6px}
-h2{font-size:15px;margin:0 0 8px}
-.eyebrow{
-  font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--muted);font-weight:600;margin:0 0 3px
-}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:2px}
-.btn{
-  font:inherit;font-weight:600;cursor:pointer;background:var(--card);
-  color:var(--ink);border:1.5px solid var(--ink);border-radius:2px;
-  padding:11px 18px;transition:background .12s,color .12s
-}
-.btn:hover{background:var(--ink);color:var(--card)}
-.btn[disabled]{opacity:.4;cursor:not-allowed}
-.btn.sel{background:var(--ink);color:var(--card)}
-.btn.ghost{border-color:var(--rule);font-weight:500}
-.btn.ghost.sel{border-color:var(--ink)}
-.btn.wide{width:100%;text-align:center}
-.kbd{
-  display:inline-block;min-width:17px;padding:0 4px;margin-right:7px;
-  border:1px solid currentColor;border-radius:2px;
-  font-size:10.5px;font-weight:700;opacity:.75;
-  font-family:ui-monospace,monospace
-}
-:focus-visible{outline:2.5px solid var(--bronze);outline-offset:2px}
-.muted{color:var(--muted);font-size:13px}
-label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
-select{
-  font:inherit;padding:10px;border:1.5px solid var(--rule);
-  border-radius:2px;background:var(--card);color:var(--ink);width:100%
-}
-@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+BASE_HTML = """
+<!doctype html>
+<html lang="{{ 'ar' if lang == 'ar' else 'en' }}" dir="{{ 'rtl' if lang == 'ar' else 'ltr' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ t('title') }}</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --card-border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --amber: #f59e0b;
+    --green: #22c55e;
+    --red: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 24px 16px;
+  }
+  .topbar { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .title { font-size: 1.3rem; font-weight: 700; }
+  .score-badge { background: var(--card); border: 1px solid var(--card-border); padding: 8px 16px; border-radius: 999px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 28px; max-width: 720px; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .progress { width: 100%; max-width: 720px; height: 8px; background: var(--card-border); border-radius: 999px; margin-bottom: 20px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); transition: width .3s; }
+  h1, h2 { margin-top: 0; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin: 20px 0; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+  .field-label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+  .field-value { font-size: 1.02rem; font-weight: 500; }
+  .actions { display: flex; gap: 16px; margin-top: 24px; }
+  button, .btn { flex: 1; padding: 14px; border: none; border-radius: 10px; font-size: 1.05rem; font-weight: 700; cursor: pointer; color: #fff; text-align: center; text-decoration: none; display: inline-block; }
+  .btn-approve { background: var(--green); }
+  .btn-reject { background: var(--red); }
+  .btn-continue { background: var(--accent); color: #0f172a; }
+  .btn-lang { background: var(--card); border: 1px solid var(--card-border); color: var(--text); }
+  .outcome-repay { color: var(--green); font-weight: 700; }
+  .outcome-default { color: var(--red); font-weight: 700; }
+  .delta-pos { color: var(--green); }
+  .delta-neg { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--card-border); text-align: {{ 'right' if lang == 'ar' else 'left' }}; font-size: .92rem; }
+  .lang-row { display: flex; gap: 16px; margin-top: 24px; }
+  .final-score { font-size: 2.6rem; font-weight: 800; text-align: center; margin: 16px 0; }
+  .final-out-of { text-align: center; margin-top: -10px; }
+  .muted { color: var(--muted); }
+  .score-line { font-size: .85rem; }
+  .reason-options { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+  .reason-option { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+  .reason-option input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .reason-option span { font-size: 1rem; }
+  .glossary { margin: 4px 0 20px; }
+  .glossary summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: .92rem; user-select: none; }
+  .glossary ul { margin: 10px 0 0; padding-inline-start: 18px; }
+  .glossary li { margin-bottom: 6px; font-size: .88rem; color: var(--muted); }
+  .glossary li strong { color: var(--text); }
+  .chart-box { background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 16px; margin: 4px 0 16px; }
+  .timer { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; background: var(--card); border: 1px solid var(--card-border); border-radius: 999px; padding: 8px 18px; margin-bottom: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .timer-low { border-color: var(--amber); color: var(--amber); }
+  .timer-zero { border-color: var(--red); color: var(--red); }
+  .timer-warning { width: 100%; max-width: 720px; background: rgba(245,158,11,.15); border: 1px solid var(--amber); color: var(--amber); border-radius: 10px; padding: 10px 16px; margin-bottom: 14px; font-weight: 600; text-align: center; }
+</style>
+{% block head_extra %}{% endblock %}
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>
 """
 
-# ---------------------------------------------------------------------------
-# Screen 1 - participant number only
-# ---------------------------------------------------------------------------
-
-START_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Loan Default Game</title><style>{{css|safe}}</style></head><body>
-<div class="wrap" style="max-width:460px;padding-top:64px">
-  <p class="eyebrow">KDI School &middot; Experimental Economics</p>
-  <h1>Loan Default Game</h1>
-  <p class="muted">Aswan microfinance pilot</p>
-  <hr class="rule">
-  {% if error %}<p style="color:#9B2C2C;font-weight:600">{{error}}</p>{% endif %}
-  <form method="post" style="display:grid;gap:18px">
-    <div>
-      <label for="pid">Your participant number</label>
-      <select id="pid" name="participant_id" required autofocus>
-        <option value="">&mdash; select &mdash;</option>
-        {% for p in available %}<option value="{{p}}">{{p}}</option>{%
- endfor %}
-      </select>
-      <p class="muted" style="margin:7px 0 0">It is on the card at your seat.</p>
-      {% if not available %}<p class="muted">All four numbers are in use. Tell the researcher.</p>{% endif %}
-    </div>
-    <button class="btn wide" type="submit">Start</button>
-  </form>
-</div></body></html>"""
-
-# ---------------------------------------------------------------------------
-# Screen 2 - instructions, comprehension check, practice, 8 rounds, result
-# ---------------------------------------------------------------------------
-
-GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Loan Default Game</title><style>{{css|safe}}
-.step{display:none}.step.on{display:block}
-.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;align-items:start}
-@media(max-width:820px){.grid{grid-template-columns:1fr}}
-.standing{
-  background:var(--band);border:1px solid var(--rule);border-radius:2px;
-  padding:11px 14px;display:grid;grid-template-columns:1fr 1fr;gap:5px 22px
-}
-.standing div{display:flex;justify-content:space-between;gap:12px;font-size:12.5px}
-.standing span:first-child{color:var(--muted)}
-.standing span:last-child{font-weight:600;text-align:right}
-.payrow{display:grid;grid-template-columns:1fr auto auto;gap:4px 16px;font-size:13.5px}
-.payrow div{padding:3px 0;border-bottom:1px solid var(--rule)}
-.payrow div:nth-child(3n+2),.payrow div:nth-child(3n){text-align:right;font-weight:600}
-.steps{counter-reset:s;list-style:none;padding:0;margin:0;display:grid;gap:7px}
-.steps li{counter-increment:s;display:flex;gap:11px;font-size:14px}
-.steps li::before{
-  content:counter(s);flex:0 0 20px;height:20px;margin-top:1px;
-  border:1.5px solid var(--ink);border-radius:50%;
-  font-size:11px;font-weight:700;display:grid;place-items:center
-}
-.varybox{padding:18px;border-bottom:1px solid var(--rule)}
-.scorerow{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
-.scorelab{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:600}
-.scoreval{font-size:26px;font-weight:700;letter-spacing:-.02em}
-.purpose{font-size:17px;line-height:1.45;margin:0}
-.banner{
-  border:1px solid var(--rule);border-left:3px solid var(--ink);
-  background:var(--card);padding:9px 13px;font-size:13px;margin-bottom:14px
-}
-.prog{display:flex;gap:5px;margin-bottom:16px}
-.pip{height:4px;flex:1;background:var(--band);border-radius:2px}
-.pip.done{background:var(--ink)}.pip.now{background:var(--bronze)}
-.chips{display:flex;flex-wrap:wrap;gap:7px}
-.chips .btn{padding:8px 12px;font-size:13.5px}
-.reasons{display:grid;gap:6px}
-.reasons .btn{text-align:left;padding:9px 12px;font-size:13.5px;font-weight:500}
-.big{display:grid;grid-template-columns:1fr 1fr;gap:11px}
-.big .btn{padding:17px 10px;font-size:16px}
-.fade{animation:f .13s ease-out}@keyframes f{from{opacity:0}to{opacity:1}}
-.pay{font-size:40px;font-weight:700;letter-spacing:-.02em;margin:6px 0}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:26px}
-@media(max-width:820px){.two{grid-template-columns:1fr;gap:0}}
-</style></head><body><div class="wrap">
-
-<!-- ============ INSTRUCTIONS ============ -->
-<section class="step on" id="s-intro">
-  <p class="eyebrow">Instructions &middot; participant {{ pid }}</p>
-  <h1>You are a loan officer</h1>
-  <p style="margin:0 0 18px">You will review <strong>8 loan applications</strong>, one at a
-  time, and decide whether to <strong>approve</strong> or <strong>reject</strong> each one.</p>
-
-  <div class="two">
-    <div>
-      <p class="eyebrow">Identical in all 8 applications</p>
-      <div class="standing" style="grid-template-columns:1fr">
-        {% for k,v in standing %}<div><span>{{k}}</span><span class="mono">{{v}}</span></div>{% endfor %}
-      </div>
-      <p class="muted" style="margin:8px 0 0">Read these once now. They never change,
-      so you will not need to read them again.</p>
-
-      <p class="eyebrow" style="margin-top:20px">Only two things differ</p>
-      <div class="card" style="padding:13px 15px">
-        <p style="margin:0 0 7px"><strong>1. The credit score</strong> &mdash; High or Low.</p>
-        <p style="margin:0"><strong>2. The reason the applicant gives</strong> for wanting
-        the loan.</p>
-      </div>
-      <p class="muted" style="margin:8px 0 0">That is everything you have to work with.</p>
-    </div>
-
-    <div>
-      <p class="eyebrow">Each application is one screen</p>
-      <ol class="steps">
-        <li>Read the credit score and the stated reason.</li>
-        <li>Press <span class="kbd">A</span>to approve or <span class="kbd">R</span>to reject.</li>
-        <li>If you approve, choose an amount &mdash; keys <span class="kbd">1</span>to<span class="kbd">5</span>.</li>
-        <li>Choose the one factor that mattered most &mdash; keys <span class="kbd">Z</span>to<span class="kbd">N</span>.</li>
-        <li>Press <span class="kbd">&crarr;</span>for the next application.</li>
-      </ol>
-      <p class="muted" style="margin:9px 0 0">You can click instead of using the keys.
-      After each decision you find out whether that applicant repaid; it appears at the
-      top of the next screen.</p>
-
-      <p class="eyebrow" style="margin-top:20px">Points you earn</p>
-      <div class="payrow">
-        <div>Approve, and they repay</div><div>+100</div><div>5,000 KRW</div>
-        <div>Reject, and they would have defaulted</div><div>+50</div><div>3,750 KRW</div>
-        <div>Reject, and they would have repaid</div><div>&minus;50</div><div>1,250 KRW</div>
-        <div>Approve, and they default</div><div>&minus;100</div><div>0 KRW</div>
-      </div>
-    </div>
+LANGUAGE_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">Loan Default Game / لعبة تعثر السداد</div>
+</div>
+<div class="card">
+  <h1>Select Language / اختار اللغة</h1>
+  <p class="muted">
+    Review 10 loan applications and decide whether to approve or reject each one.<br>
+    راجع ١٠ طلبات قروض وقرر توافق ولا ترفض كل واحد فيهم.
+  </p>
+  <div class="lang-row">
+    <a class="btn btn-lang" href="{{ url_for('set_language', lang='en') }}">English</a>
+    <a class="btn btn-lang" href="{{ url_for('set_language', lang='ar') }}">المصري</a>
   </div>
+</div>
+{% endblock %}
+"""
 
-  <hr class="rule">
-  <p class="eyebrow">How you get paid</p>
-  <p style="margin:0 0 6px"><strong>At the end, one of your eight decisions is drawn at
-  random, and only that one is paid</strong> &mdash; at the rate in the table above, up to
-  5,000 KRW.</p>
-  <p style="margin:0 0 6px">So treat every single application as if it is the one that
-  counts, because any of them might be.</p>
-  <p class="muted" style="margin:0">There is no trick and no answer we are looking for.
-  Take the time you need and decide the way you actually would.</p>
+HOW_TO_PLAY_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+</div>
+<div class="card">
+  <h1>{{ t('how_to_play_title') }}</h1>
+  <p>{{ t('how_to_play_p1') }}</p>
+  <p>{{ t('how_to_play_p2') }}</p>
+  <p>{{ t('how_to_play_p3') }}</p>
+  <p>{{ t('how_to_play_p4') }}</p>
+  <p>{{ t('how_to_play_p5') }}</p>
+  <p class="muted">{{ t('how_to_play_p6') }}</p>
+  <a class="btn btn-continue" href="{{ url_for('show_case') }}" style="display: block; width: 100%; margin-top: 8px;">{{ t('start_game') }}</a>
+</div>
+{% endblock %}
+"""
 
-  <hr class="rule">
-  <p class="muted" style="margin:0 0 12px">Next: two quick questions to confirm the rules,
-  then one practice application that does not count.</p>
-  <button class="btn" onclick="go('s-check')" autofocus>Continue</button>
-</section>
-
-<!-- ============ COMPREHENSION CHECK ============ -->
-<section class="step" id="s-check">
-  <p class="eyebrow">Two questions</p>
-  <h1>Both answers must be correct to continue</h1>
-  <div style="margin:20px 0">
-    <p style="font-weight:600;margin:0 0 8px">1. If you approve an applicant who then
-    defaults, what happens to your points?</p>
-    <div class="chips" id="c1">
-      <button class="btn ghost" data-v="a">+100</button>
-      <button class="btn ghost" data-v="b">&minus;100</button>
-      <button class="btn ghost" data-v="c">&minus;50</button>
-      <button class="btn ghost" data-v="d">+50</button>
-    </div>
-  </div>
-  <div style="margin:0 0 20px">
-    <p style="font-weight:600;margin:0 0 8px">2. How many of your eight decisions
-    determine your payment?</p>
-    <div class="chips" id="c2">
-      <button class="btn ghost" data-v="a">All eight, averaged</button>
-      <button class="btn ghost" data-v="b">One, drawn at random</button>
-      <button class="btn ghost" data-v="c">The best one</button>
-    </div>
-  </div>
-  <p id="cmsg" class="muted" style="min-height:20px;margin:0 0 12px"></p>
-  <button class="btn" id="cbtn" onclick="checkAnswers()">Check my answers</button>
-  <button class="btn ghost" onclick="go('s-intro')">Back to instructions</button>
-</section>
-
-<!-- ============ PRACTICE + 8 ROUNDS ============ -->
-<section class="step" id="s-round">
-  <div class="prog" id="prog"></div>
-  <p class="eyebrow" id="r-eyebrow"></p>
+CASE_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
+</div>
+<div class="progress"><div class="progress-fill" style="width: {{ (index / total * 100) | round(1) }}%;"></div></div>
+<div class="timer" id="timer" data-seconds="60" data-extra="30">
+  <span>{{ t('time_left') }}</span>
+  <span id="timer-value">1:00</span>
+</div>
+<div class="timer-warning" id="timer-warning" style="display: none;">{{ t('time_warning') }}</div>
+<div class="card">
+  <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }}</h2>
+  <h1>{{ case.situation[lang] }}</h1>
+  <details class="glossary">
+    <summary>{{ t('glossary_title') }}</summary>
+    <ul>
+      <li><strong>{{ t('credit_score') }}:</strong> {{ t('glossary_credit_score') }}</li>
+      <li><strong>{{ t('experience') }}:</strong> {{ t('glossary_experience') }}</li>
+      <li><strong>{{ t('monthly_income') }}:</strong> {{ t('glossary_monthly_income') }}</li>
+      <li><strong>{{ t('guarantor') }}:</strong> {{ t('glossary_guarantor') }}</li>
+      <li><strong>{{ t('field_investigation') }}:</strong> {{ t('glossary_field_investigation') }}</li>
+      <li><strong>{{ t('beneficiary') }}:</strong> {{ t('glossary_beneficiary') }}</li>
+      <li><strong>{{ t('literacy') }}:</strong> {{ t('glossary_literacy') }}</li>
+    </ul>
+  </details>
   <div class="grid">
     <div>
-      <div id="r-banner"></div>
-      <div class="card" id="r-card">
-        <div class="varybox">
-          <p class="muted mono" id="r-who" style="margin:0 0 12px;font-size:12.5px"></p>
-          <div class="scorerow">
-            <span class="scorelab">Credit score</span>
-            <span class="scoreval" id="r-score"></span>
-          </div>
-          <p class="scorelab" style="margin:0 0 5px">Stated reason for the loan</p>
-          <p class="purpose" id="r-purpose"></p>
-        </div>
-        <div style="padding:12px 14px">
-          <div class="standing" style="border:0;background:transparent;padding:0">
-            {% for k,v in standing %}<div><span>{{k}}</span><span class="mono">{{v}}</span></div>{% endfor %}
-          </div>
-        </div>
-      </div>
+      <div class="field-label">{{ t('loan_amount') }}</div>
+      <div class="field-value">{{ '{:,}'.format(case.loan_amount) }} {{ t('egp') }}</div>
     </div>
     <div>
-      <p class="eyebrow">Your decision</p>
-      <div class="big" style="margin-bottom:18px">
-        <button class="btn" id="b-app" onclick="pickDec('Approve')"><span class="kbd">A</span>Approve</button>
-        <button class="btn" id="b-rej" onclick="pickDec('Reject')"><span class="kbd">R</span>Reject</button>
-      </div>
-      <div id="amt-wrap" style="display:none;margin-bottom:18px">
-        <p class="eyebrow">Approve how much?</p>
-        <div class="chips" id="amt"></div>
-      </div>
-      <div id="rsn-wrap" style="display:none">
-        <p class="eyebrow">Single most important factor</p>
-        <div class="reasons" id="rsn"></div>
-      </div>
-      <hr class="rule">
-      <button class="btn wide" id="nextbtn" disabled onclick="submitRound()">
-        <span class="kbd">&crarr;</span><span id="nextlbl">Next application</span>
-      </button>
-      <p class="muted" id="running" style="margin-top:10px"></p>
+      <div class="field-label">{{ t('credit_score') }}</div>
+      <div class="field-value">{{ t('credit_score_high') if case.credit_score_level == 'high' else t('credit_score_low') }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('experience') }}</div>
+      <div class="field-value">{{ case.experience_years }} {{ t('years_suffix') }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('monthly_income') }}</div>
+      <div class="field-value">{{ case.monthly_income[lang] }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('beneficiary') }}</div>
+      <div class="field-value">{{ case.beneficiary[lang] }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('field_investigation') }}</div>
+      <div class="field-value">{{ case.field_investigation[lang] }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('guarantor') }}</div>
+      <div class="field-value">{{ case.guarantor[lang] }}</div>
+    </div>
+    <div>
+      <div class="field-label">{{ t('literacy') }}</div>
+      <div class="field-value">{{ case.literacy[lang] }}</div>
     </div>
   </div>
-</section>
-
-<!-- ============ RESULT ============ -->
-<section class="step" id="s-done">
-  <p class="eyebrow">Session complete</p>
-  <h1>The decision drawn at random</h1>
-
-  <div class="card" style="padding:20px;max-width:520px">
-    <p class="muted mono" id="d-line" style="margin:0 0 6px"></p>
-    <p style="margin:0 0 14px" id="d-detail"></p>
-    <hr class="rule" style="margin:12px 0">
-    <p class="eyebrow">Your bonus</p>
-    <p class="pay" id="d-krw"></p>
-    <p class="muted" id="d-total"></p>
-  </div>
-  <p class="muted" style="margin-top:18px">Thank you. Please show this screen to the researcher.</p>
-</section>
-
+  <form method="post" action="{{ url_for('decide') }}" class="actions">
+    <button type="submit" name="decision" value="approve" class="btn-approve">{{ t('approve') }}</button>
+    <button type="submit" name="decision" value="reject" class="btn-reject">{{ t('reject') }}</button>
+  </form>
+</div>
 <script>
-const CASES    = {{ cases_json|safe }};
-const PRACTICE = {{ practice_json|safe }};
-const AMOUNTS  = {{ amounts_json|safe }};
-const REASONS  = {{ reasons_json|safe }};
-const SID      = "{{ sid }}";
-
-let idx=-1, dec=null, amt=null, rsn=null, total=0, tRound=0, prev=null;
-const queue=[];
-
-function go(id){
-  document.querySelectorAll('.step').forEach(s=>s.classList.remove('on'));
-  document.getElementById(id).classList.add('on');
-  window.scrollTo(0,0);
-}
-
-/* ---- comprehension check ---- */
-let a1=null,a2=null;
-document.querySelectorAll('#c1 .btn').forEach(b=>b.onclick=()=>{a1=b.dataset.v;
-  document.querySelectorAll('#c1 .btn').forEach(x=>x.classList.remove('sel'));b.classList.add('sel');});
-document.querySelectorAll('#c2 .btn').forEach(b=>b.onclick=()=>{a2=b.dataset.v;
-  document.querySelectorAll('#c2 .btn').forEach(x=>x.classList.remove('sel'));b.classList.add('sel');});
-function checkAnswers(){
-  const m=document.getElementById('cmsg');
-  if(a1===null||a2===null){m.textContent='Answer both questions first.';return;}
-  if(a1==='b'&&a2==='b'){
-    m.textContent='Correct. We begin with one practice application.';
-    document.getElementById('cbtn').disabled=true;
-    setTimeout(()=>{go('s-round');render();},600);
-  } else {
-    m.textContent='Not quite. Go back to the instructions and check the points table '
-      + 'and the payment rule, then try again.';
+(function () {
+  var box = document.getElementById('timer');
+  var valueEl = document.getElementById('timer-value');
+  var warnEl = document.getElementById('timer-warning');
+  if (!box || !valueEl) { return; }
+  var remaining = parseInt(box.dataset.seconds, 10);
+  var extra = parseInt(box.dataset.extra, 10);
+  var extended = false;
+  function fmt(s) {
+    var m = Math.floor(s / 60);
+    var sec = s % 60;
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
   }
+  function render() { valueEl.textContent = fmt(Math.max(remaining, 0)); }
+  render();
+  var iv = setInterval(function () {
+    remaining -= 1;
+    if (remaining <= 0) {
+      if (!extended) {
+        extended = true;
+        remaining = extra;
+        warnEl.style.display = 'block';
+        box.classList.add('timer-low');
+        render();
+      } else {
+        remaining = 0;
+        render();
+        box.classList.remove('timer-low');
+        box.classList.add('timer-zero');
+        clearInterval(iv);
+      }
+    } else {
+      render();
+    }
+  }, 1000);
+})();
+</script>
+{% endblock %}
+"""
+
+REASON_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
+</div>
+<div class="card">
+  <h2 class="muted">{{ t('case_label').format(n=index + 1, total=total) }} &mdash; {{ case_desc }}</h2>
+  <h1>{{ t('reason_question') }}</h1>
+  <form method="post" action="{{ url_for('submit_reason') }}">
+    <div class="reason-options">
+      {% for opt in reason_options %}
+      <label class="reason-option">
+        <input type="radio" name="reason" value="{{ opt.id }}" required>
+        <span>{{ opt.label }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn-continue" style="width: 100%; margin-top: 20px;">{{ t('continue') }}</button>
+  </form>
+</div>
+{% endblock %}
+"""
+
+OUTCOME_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+  <div class="score-badge">{{ t('score') }}: {{ score }}<div class="score-line muted">{{ t('total_earned') }}: {{ total_krw }} {{ t('won') }}</div></div>
+</div>
+<div class="card">
+  <h2 class="muted">{{ t('case_label').format(n=result.index + 1, total=total) }} &mdash; {{ case_desc }}</h2>
+  <p>{{ t('you_approved') if result.decision == 'approve' else t('you_rejected') }}</p>
+  <p class="{{ 'outcome-repay' if result.outcome == 'repay' else 'outcome-default' }}">
+    {{ t('outcome_repay') if result.outcome == 'repay' else t('outcome_default') }}
+  </p>
+  <p>{{ t('points') }}: <strong class="{{ 'delta-pos' if result.delta > 0 else 'delta-neg' }}">{{ '+' if result.delta > 0 else '' }}{{ result.delta }}</strong></p>
+  <form method="post" action="{{ url_for('next_case') }}">
+    <button type="submit" class="btn-continue" style="width: 100%;">{{ t('continue') }}</button>
+  </form>
+</div>
+{% endblock %}
+"""
+
+FINAL_HTML = """
+{% extends 'base.html' %}
+{% block body %}
+<div class="topbar">
+  <div class="title">{{ t('title') }}</div>
+</div>
+<div class="card">
+  <h1>{{ t('final_title') }}</h1>
+  <div class="final-score">{{ total_krw }} {{ t('won') }}</div>
+  <p class="muted final-out-of">{{ t('out_of') }} 10,000 {{ t('won') }}</p>
+  <h2>{{ t('summary') }}</h2>
+  <table>
+    <tr>
+      <th>#</th>
+      <th>{{ t('case_column') }}</th>
+      <th>{{ t('approve') }}/{{ t('reject') }}</th>
+      <th>{{ t('outcome') }}</th>
+      <th>{{ t('points') }}</th>
+    </tr>
+    {% for d in decisions %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ d.situation }}</td>
+      <td>{{ t('approve') if d.decision == 'approve' else t('reject') }}</td>
+      <td class="{{ 'outcome-repay' if d.outcome == 'repay' else 'outcome-default' }}">
+        {{ t('outcome_repay_short') if d.outcome == 'repay' else t('outcome_default_short') }}
+      </td>
+      <td class="{{ 'delta-pos' if d.delta > 0 else 'delta-neg' }}">{{ '+' if d.delta > 0 else '' }}{{ d.delta }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('restart') }}" style="margin-top: 24px;">
+    <button type="submit" class="btn-continue" style="width: 100%;">{{ t('play_again') }}</button>
+  </form>
+</div>
+{% endblock %}
+"""
+
+ADMIN_HTML = """
+{% extends 'base.html' %}
+{% block head_extra %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+{% block body %}
+<div class="topbar">
+  <div class="title">Loan Default Game &mdash; Admin Dashboard</div>
+</div>
+<div class="card" style="max-width: 1000px;">
+  <p class="muted">Auto-refreshes every 30 seconds.</p>
+
+  <h2>Summary</h2>
+  <div class="grid">
+    <div>
+      <div class="field-label">Total sessions completed</div>
+      <div class="field-value">{{ total_sessions }}</div>
+    </div>
+    <div>
+      <div class="field-label">Average KRW earned</div>
+      <div class="field-value">{{ avg_krw }}</div>
+    </div>
+    <div>
+      <div class="field-label">Average total score</div>
+      <div class="field-value">{{ avg_score }}</div>
+    </div>
+  </div>
+
+  <h2>Approval rate: credit score &times; situation</h2>
+  <div class="chart-box">
+    {% if approval_chart_svg %}{{ approval_chart_svg | safe }}{% else %}<p class="muted">No data yet.</p>{% endif %}
+  </div>
+  <div style="overflow-x: auto;">
+  <table>
+    <tr>
+      <th>Credit score</th>
+      {% for stype in situation_types %}<th>{{ stype }}</th>{% endfor %}
+    </tr>
+    {% for row in crosstab_rows %}
+    <tr>
+      <td>{{ 'High' if row.level == 'high' else 'Low' }}</td>
+      {% for cell in row.cells %}
+      <td>
+        {% if cell.pct is not none %}{{ cell.pct }}%{% else %}&mdash;{% endif %}
+        <span class="muted">(n={{ cell.n }})</span>
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+
+  <h2>Reason selected (all decisions, all sessions)</h2>
+  <div class="chart-box">
+    {% if reason_chart_svg %}{{ reason_chart_svg | safe }}{% else %}<p class="muted">No data yet.</p>{% endif %}
+  </div>
+  <table>
+    <tr><th>Reason</th><th>Times selected</th></tr>
+    {% for r in reason_table %}
+    <tr><td>{{ r.label }}</td><td>{{ r.count }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>All completed sessions ({{ total_sessions }})</h2>
+  <div style="overflow-x: auto;">
+  <table>
+    <tr>
+      <th>Timestamp</th>
+      <th>Session ID</th>
+      <th>Total KRW</th>
+      <th>Total score</th>
+    </tr>
+    {% for s in sessions_table %}
+    <tr>
+      <td>{{ s.timestamp }}</td>
+      <td>{{ s.session_id }}</td>
+      <td>{{ s.total_krw }}</td>
+      <td>{{ s.total_score }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}
+"""
+
+app.jinja_env.loader = DictLoader({
+    "base.html": BASE_HTML,
+    "language.html": LANGUAGE_HTML,
+    "how_to_play.html": HOW_TO_PLAY_HTML,
+    "case.html": CASE_HTML,
+    "reason.html": REASON_HTML,
+    "outcome.html": OUTCOME_HTML,
+    "final.html": FINAL_HTML,
+    "admin.html": ADMIN_HTML,
+})
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_decisions(decisions, lang):
+    return [
+        {
+            "situation": CASES_BY_ID[d["case_id"]]["situation"][lang],
+            "situation_type": CASES_BY_ID[d["case_id"]]["situation_type"],
+            "credit_score_level": CASES_BY_ID[d["case_id"]]["credit_score_level"],
+            "decision": d["decision"],
+            "outcome": d["outcome"],
+            "delta": d["delta"],
+            "krw": d.get("krw", 0),
+            "reason": d.get("reason", ""),
+        }
+        for d in decisions
+    ]
+
+
+# ---------------------------------------------------------------------------
+# CSV logging
+# ---------------------------------------------------------------------------
+
+
+def save_session_to_csv():
+    lang = session.get("lang", "en")
+    resolved = resolve_decisions(session.get("decisions", []), lang)
+    fieldnames = ["timestamp", "session_id", "language", "total_score", "total_krw"]
+    for i in range(1, len(CASES) + 1):
+        fieldnames += [
+            f"case{i}_situation_type",
+            f"case{i}_credit_score_level",
+            f"case{i}_situation",
+            f"case{i}_decision",
+            f"case{i}_outcome",
+            f"case{i}_points",
+            f"case{i}_krw",
+            f"case{i}_reason",
+        ]
+
+    file_exists = os.path.isfile(CSV_PATH)
+    row = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "session_id": session.get("session_id", ""),
+        "language": lang,
+        "total_score": session.get("score", 0),
+        "total_krw": total_krw_earned(session.get("decisions", [])),
+    }
+    for i, d in enumerate(resolved, start=1):
+        row[f"case{i}_situation_type"] = d["situation_type"]
+        row[f"case{i}_credit_score_level"] = d["credit_score_level"]
+        row[f"case{i}_situation"] = d["situation"]
+        row[f"case{i}_decision"] = d["decision"]
+        row[f"case{i}_outcome"] = d["outcome"]
+        row[f"case{i}_points"] = d["delta"]
+        row[f"case{i}_krw"] = d["krw"]
+        row[f"case{i}_reason"] = d["reason"]
+
+    with open(CSV_PATH, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def read_sessions_csv():
+    if not os.path.isfile(CSV_PATH):
+        return []
+    with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard charts (server-rendered inline SVG, no JS dependency)
+# ---------------------------------------------------------------------------
+
+# Short labels for the reason bar chart only -- the table keeps the full text.
+REASON_CHART_LABELS = {
+    "credit_score": "Credit score",
+    "situation": "Business situation",
+    "both": "Both equally",
+    "other": "Something else",
 }
 
-/* ---- build the fixed control widgets once ---- */
-const amtBox=document.getElementById('amt');
-AMOUNTS.forEach((v,i)=>{
-  const b=document.createElement('button');b.className='btn ghost';
-  b.innerHTML='<span class="kbd">'+(i+1)+'</span>'+v.toLocaleString()+' EGP';
-  b.onclick=()=>{amt=v;[...amtBox.children].forEach(c=>c.classList.remove('sel'));
-    b.classList.add('sel');gate();};
-  amtBox.appendChild(b);
-});
-const rsnBox=document.getElementById('rsn');
-REASONS.forEach(r=>{
-  const b=document.createElement('button');b.className='btn ghost';
-  b.innerHTML='<span class="kbd">'+r.key+'</span>'+r.text;
-  b.onclick=()=>{rsn=r.text;[...rsnBox.children].forEach(c=>c.classList.remove('sel'));
-    b.classList.add('sel');gate();};
-  rsnBox.appendChild(b);
-});
 
-function cur(){return idx<0?PRACTICE:CASES[idx];}
-function isPractice(){return idx<0;}
+def _svg_escape(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-function render(){
-  const c=cur();
-  document.getElementById('r-eyebrow').textContent =
-    isPractice() ? 'Practice application â€” not counted' : 'Application '+(idx+1)+' of 8';
-  document.getElementById('prog').innerHTML =
-    CASES.map((_,i)=>'<div class="pip '+(idx>i?'done':(idx===i?'now':''))+'"></div>').join('');
-  document.getElementById('r-who').textContent = c.name+' Â· '+c.loc;
-  document.getElementById('r-score').textContent = c.credit_score;
-  document.getElementById('r-purpose').textContent = c.purpose;
 
-  const bn=document.getElementById('r-banner');
-  bn.innerHTML = prev
-    ? '<div class="banner fade">Previous applicant '
-      + (prev.outcome==='Repay'?'repaid':'defaulted') + '. '
-      + (prev.points>0?'+':'') + prev.points + ' points.</div>'
-    : '';
-  document.getElementById('running').textContent =
-    isPractice() ? '' : 'Running points: '+total;
+def render_approval_chart(crosstab_rows, situation_types):
+    cells_by_level = {row["level"]: row["cells"] for row in crosstab_rows}
+    high_cells = cells_by_level.get("high", [])
+    low_cells = cells_by_level.get("low", [])
+    total_n = sum(c["n"] for c in high_cells) + sum(c["n"] for c in low_cells)
+    if total_n == 0:
+        return None
 
-  dec=null;amt=null;rsn=null;
-  document.getElementById('b-app').classList.remove('sel');
-  document.getElementById('b-rej').classList.remove('sel');
-  document.getElementById('amt-wrap').style.display='none';
-  document.getElementById('rsn-wrap').style.display='none';
-  [...amtBox.children].forEach(c=>c.classList.remove('sel'));
-  [...rsnBox.children].forEach(c=>c.classList.remove('sel'));
-  document.getElementById('nextlbl').textContent =
-    isPractice() ? 'Start the eight applications'
-                 : (idx===CASES.length-1 ? 'Show my result' : 'Next application');
-  const card=document.getElementById('r-card');
-  card.classList.add('fade');setTimeout(()=>card.classList.remove('fade'),160);
-  gate();tRound=Date.now();
-}
+    width, height = 640, 300
+    margin_left, margin_right, margin_top, margin_bottom = 40, 12, 36, 56
+    plot_w = width - margin_left - margin_right
+    plot_h = height - margin_top - margin_bottom
+    n_groups = max(len(situation_types), 1)
+    group_w = plot_w / n_groups
+    bar_w = group_w * 0.32
+    gap = group_w * 0.08
 
-function pickDec(d){
-  dec=d;
-  document.getElementById('b-app').classList.toggle('sel',d==='Approve');
-  document.getElementById('b-rej').classList.toggle('sel',d==='Reject');
-  document.getElementById('amt-wrap').style.display = d==='Approve'?'block':'none';
-  document.getElementById('rsn-wrap').style.display='block';
-  if(d==='Reject'){amt=0;[...amtBox.children].forEach(c=>c.classList.remove('sel'));}
-  gate();
-}
-function gate(){
-  const ok = dec && rsn!==null && (dec==='Reject'||amt!==null);
-  document.getElementById('nextbtn').disabled = !ok;
-}
+    def y_for_pct(pct):
+        return margin_top + plot_h * (1 - pct / 100)
 
-function submitRound(){
-  if(document.getElementById('nextbtn').disabled)return;
-  const c=cur();
-  if(isPractice()){prev=null;idx=0;render();return;}
-  const pts = dec==='Approve' ? (c.outcome==='Default'?-100:100)
-                              : (c.outcome==='Default'?50:-50);
-  total+=pts;
-  save({session_id:SID,round_index:c.round_index,case_id:c.case_id,
-    credit_score:c.credit_score,use_of_funds:c.use_of_funds,framing:c.framing,
-    purpose_label:c.purpose_label,applicant_name:c.name,decision:dec,
-    approved_amount:(dec==='Approve'?amt:0),reason_choice:rsn,
-    true_default_prob:c.true_default_prob,outcome:c.outcome,points:pts,
-    seconds_on_round:Math.round((Date.now()-tRound)/1000)});
-  prev={outcome:c.outcome,points:pts};
-  if(idx===CASES.length-1){finish();return;}
-  idx++;render();
-}
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Approval rate by credit score and situation" '
+        f'style="width:100%;height:auto;font-family:inherit;">'
+    ]
 
-/* background save that never blocks the interface */
-function save(row){
-  queue.push(row);
-  fetch('/api/round',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(row),keepalive:true})
-    .then(r=>{if(r.ok){const i=queue.indexOf(row);if(i>=0)queue.splice(i,1);}})
-    .catch(()=>{});
-}
-setInterval(()=>{[...queue].forEach(r=>save(r));},6000);
+    for pct in (0, 25, 50, 75, 100):
+        y = y_for_pct(pct)
+        dash = "" if pct == 0 else ' stroke-dasharray="3,3"'
+        parts.append(
+            f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width - margin_right}" y2="{y:.1f}" '
+            f'stroke="var(--card-border)" stroke-width="1"{dash}/>'
+        )
+        parts.append(
+            f'<text x="{margin_left - 8}" y="{y + 4:.1f}" text-anchor="end" '
+            f'font-size="11" fill="var(--muted)">{pct}%</text>'
+        )
 
-function finish(){
-  fetch('/api/finish',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({session_id:SID,total_points:total,pending:queue})})
-    .then(r=>r.json()).then(d=>{
-      document.getElementById('d-line').textContent =
-        'Application '+d.selected_round_index+' â€” '+d.applicant_name;
-      document.getElementById('d-detail').textContent =
-        d.decision+' Â· '+d.outcome+' Â· '
-        +(d.selected_round_points>0?'+':'')+d.selected_round_points+' points';
-      document.getElementById('d-krw').textContent = d.bonus_krw.toLocaleString()+' KRW';
-      document.getElementById('d-total').textContent = 'Total points across all 8: '+d.total_points;
-      go('s-done');
-    }).catch(()=>{
-      go('s-done');
-      document.getElementById('d-krw').textContent='â€”';
-      document.getElementById('d-detail').textContent='Show this screen to the researcher.';
-    });
-}
+    legend_y = 16
+    parts.append(f'<rect x="{margin_left}" y="{legend_y - 9}" width="10" height="10" fill="var(--accent)" rx="2"/>')
+    parts.append(f'<text x="{margin_left + 16}" y="{legend_y}" font-size="12" fill="var(--text)">High credit score</text>')
+    legend_x2 = margin_left + 160
+    parts.append(f'<rect x="{legend_x2}" y="{legend_y - 9}" width="10" height="10" fill="var(--amber)" rx="2"/>')
+    parts.append(f'<text x="{legend_x2 + 16}" y="{legend_y}" font-size="12" fill="var(--text)">Low credit score</text>')
 
-/* keyboard: the main speed lever. A and R are the decision, so reason keys are Z X C V B N. */
-document.addEventListener('keydown',e=>{
-  if(!document.getElementById('s-round').classList.contains('on'))return;
-  if(e.metaKey||e.ctrlKey||e.altKey)return;
-  const k=e.key.toUpperCase();
-  if(k==='A'){pickDec('Approve');e.preventDefault();return;}
-  if(k==='R'){pickDec('Reject');e.preventDefault();return;}
-  if(dec==='Approve'&&/^[1-5]$/.test(k)){amtBox.children[+k-1].click();e.preventDefault();return;}
-  if(dec){const i=REASONS.findIndex(r=>r.key===k);
-    if(i>=0){rsnBox.children[i].click();e.preventDefault();return;}}
-  if(e.key==='Enter'){submitRound();e.preventDefault();}
-});
-</script></div></body></html>"""
+    for gi, stype in enumerate(situation_types):
+        group_x = margin_left + gi * group_w
+        high_cell = high_cells[gi] if gi < len(high_cells) else {"pct": None, "n": 0}
+        low_cell = low_cells[gi] if gi < len(low_cells) else {"pct": None, "n": 0}
+        bx_high = group_x + gap
+        bx_low = bx_high + bar_w + gap
 
-ADMIN_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="8"><title>Admin</title><style>{{css|safe}}
-table{border-collapse:collapse;width:100%;font-size:13.5px}
-th,td{border:1px solid var(--rule);padding:7px 9px;text-align:left}
-th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-transform:uppercase}
-.slow{background:#F6E7CF}
-</style></head><body><div class="wrap">
-<p class="eyebrow">Live monitor &middot; refreshes every 8 s</p>
-<h1>Session dashboard</h1>
-<p class="muted">{{ rows|length }} session(s) &middot; {{ total_rows }} decisions saved</p>
-<p><a class="btn" href="/admin/csv?key={{key}}">Download CSV</a></p>
-<hr class="rule">
-<table><tr>
-<th>ID</th><th>Round</th><th>Elapsed</th><th>Avg / round</th>
-<th>Approved</th><th>Points</th><th>Bonus</th><th>Status</th></tr>
-{% for r in rows %}<tr{% if r.avg and r.avg>75 %} class="slow"{% endif %}>
-<td class="mono">{{r.pid}}</td><td class="mono">{{r.n}} / 8</td>
-<td class="mono">{{r.elapsed}}</td>
-<td class="mono">{{ (r.avg|round(0)|int ~ ' s') if r.avg else 'â€”' }}</td>
-<td class="mono">{{r.approved}}</td><td class="mono">{{r.points}}</td>
-<td class="mono">{{ (r.bonus ~ ' KRW') if r.bonus is not none else 'â€”' }}</td>
-<td>{{r.status}}</td></tr>{% endfor %}
-</table>
-<hr class="rule">
-<p class="muted">Rows shaded amber are averaging over 75 seconds per application.
-Download the CSV the moment the last participant finishes &mdash; Render's free tier has
-an ephemeral filesystem, so this download is the primary copy.</p>
-</div></body></html>"""
+        for cell, bx, color in ((high_cell, bx_high, "var(--accent)"), (low_cell, bx_low, "var(--amber)")):
+            pct = cell["pct"] or 0
+            y = y_for_pct(pct)
+            bar_h = (margin_top + plot_h) - y
+            parts.append(
+                f'<rect x="{bx:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" fill="{color}" rx="2"/>'
+            )
+            if cell["pct"] is not None:
+                parts.append(
+                    f'<text x="{bx + bar_w / 2:.1f}" y="{y - 6:.1f}" text-anchor="middle" '
+                    f'font-size="11" fill="var(--text)">{cell["pct"]}%</text>'
+                )
+            parts.append(
+                f'<text x="{bx + bar_w / 2:.1f}" y="{margin_top + plot_h + 14:.1f}" text-anchor="middle" '
+                f'font-size="10" fill="var(--muted)">n={cell["n"]}</text>'
+            )
+
+        label = _svg_escape(stype.replace("_", " "))
+        parts.append(
+            f'<text x="{group_x + group_w / 2:.1f}" y="{margin_top + plot_h + 34:.1f}" text-anchor="middle" '
+            f'font-size="11" fill="var(--text)">{label}</text>'
+        )
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_reason_chart(reason_table):
+    total = sum(r["count"] for r in reason_table)
+    if total == 0:
+        return None
+
+    rows = sorted(reason_table, key=lambda r: r["count"], reverse=True)
+    max_count = max(r["count"] for r in rows) or 1
+
+    width = 640
+    row_h = 40
+    margin_top, margin_bottom = 10, 10
+    height = margin_top + margin_bottom + row_h * len(rows)
+    label_w = 190
+    bar_area_w = width - label_w - 50
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Reason selected breakdown" '
+        f'style="width:100%;height:auto;font-family:inherit;">'
+    ]
+    for i, r in enumerate(rows):
+        y = margin_top + i * row_h
+        bar_y = y + (row_h - 20) / 2
+        bar_h = 20
+        bar_w = bar_area_w * (r["count"] / max_count)
+        label = _svg_escape(REASON_CHART_LABELS.get(r["id"], r["label"]))
+        parts.append(
+            f'<text x="0" y="{y + row_h / 2 + 4:.1f}" font-size="12" fill="var(--text)">{label}</text>'
+        )
+        parts.append(
+            f'<rect x="{label_w}" y="{bar_y:.1f}" width="{bar_w:.1f}" height="{bar_h}" fill="var(--accent)" rx="3"/>'
+        )
+        parts.append(
+            f'<text x="{label_w + bar_w + 8:.1f}" y="{bar_y + bar_h / 2 + 4:.1f}" '
+            f'font-size="12" fill="var(--muted)">{r["count"]}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Email notification
+# ---------------------------------------------------------------------------
+
+
+def send_session_email(lang, score, total_krw, session_id, resolved_decisions):
+    if not RESEND_API_KEY:
+        app.logger.warning("RESEND_API_KEY not set; skipping session result email.")
+        return
+
+    lines = [
+        f"Language: {lang}",
+        f"Session ID: {session_id}",
+        f"Total score: {score}",
+        f"Total KRW earned: {total_krw} / 10000",
+        "",
+        "Decisions:",
+    ]
+    for i, d in enumerate(resolved_decisions, start=1):
+        lines.append(
+            f"{i}. [{d['situation_type']}/{d['credit_score_level']}] {d['situation']} - "
+            f"{d['decision']} - {d['outcome']} - {d['delta']:+d} "
+            f"({d['krw']} KRW) - reason: {d['reason']}"
+        )
+
+    try:
+        response = requests.post(
+            RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_SENDER,
+                "to": [EMAIL_RECIPIENT],
+                "subject": f"Loan Default Game session result - {total_krw} KRW (score {score})",
+                "text": "\n".join(lines),
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        app.logger.exception("Failed to send session result email")
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.route("/", methods=["GET", "POST"])
-def start():
-    taken = {s["participant_id"] for s in SESSIONS.values()}
-    available = [p for p in PARTICIPANT_IDS if p not in taken]
-    error = None
-    if request.method == "POST":
-        pid = request.form.get("participant_id", "")
-        if pid not in available:
-            error = "That number is already in use. Please pick another."
-        else:
-            sid = f"S{pid}-{secrets.token_hex(3)}"
 
-            SESSIONS[sid] = {
-                "session_id": sid, "participant_id": pid, "language": "EN",
-                "cases": build_cases(seed=f"{pid}{sid}"), "rows": [],
-                "started_at": time.time(), "finished_at": None,
-                "total_points": None, "bonus_krw": None,
-                "selected_round_index": None,
-            }
-            session["sid"] = sid
-            return redirect(url_for("game"))
-    return render_template_string(START_HTML, css=CSS, available=available, error=error)
+@app.route("/")
+def index():
+    session.clear()
+    return render_template("language.html", lang="en")
 
 
-@app.route("/game")
-def game():
-    sid = session.get("sid")
-    if not sid or sid not in SESSIONS:
-        return redirect(url_for("start"))
-    s = SESSIONS[sid]
-    return render_template_string(
-        GAME_HTML, css=CSS, sid=sid, pid=s["participant_id"], standing=STANDING,
-        cases_json=json.dumps(s["cases"]),
-        practice_json=json.dumps(PRACTICE),
-        amounts_json=json.dumps(AMOUNTS),
-        reasons_json=json.dumps(REASONS),
+@app.route("/set-language/<lang>")
+def set_language(lang):
+    if lang not in ("en", "ar"):
+        lang = "en"
+    session.clear()
+    session["lang"] = lang
+    session["session_id"] = str(uuid.uuid4())
+    session["score"] = 0
+    session["index"] = 0
+    session["decisions"] = []
+    session["outcomes"] = [
+        "repay" if random.random() < c["repay_probability"] else "default" for c in CASES
+    ]
+    case_order = list(range(len(CASES)))
+    random.shuffle(case_order)
+    session["case_order"] = case_order
+    return redirect(url_for("how_to_play"))
+
+
+@app.route("/how-to-play")
+def how_to_play():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    return render_template("how_to_play.html", lang=lang)
+
+
+@app.route("/case")
+def show_case():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    index = session.get("index", 0)
+    if index >= len(CASES):
+        return redirect(url_for("final"))
+    case_idx = session["case_order"][index]
+    return render_template(
+        "case.html",
+        lang=lang,
+        case=CASES[case_idx],
+        index=index,
+        total=len(CASES),
+        score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
     )
 
 
-@app.route("/api/round", methods=["POST"])
-def api_round():
-    d = request.get_json(silent=True) or {}
-    s = SESSIONS.get(d.get("session_id"))
-    if not s:
-        return jsonify({"ok": False}), 404
-    if any(r["round_index"] == d.get("round_index") for r in s["rows"]):
-        return jsonify({"ok": True, "duplicate": True})
-    row = {
-        "session_id": s["session_id"], "participant_id": s["participant_id"],
-        "timestamp": datetime.now().isoformat(timespec="seconds"), "language": "EN",
+@app.route("/decide", methods=["POST"])
+def decide():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    index = session.get("index", 0)
+    if index >= len(CASES):
+        return redirect(url_for("final"))
+
+    decision = request.form.get("decision")
+    if decision not in ("approve", "reject"):
+        return redirect(url_for("show_case"))
+
+    case_idx = session["case_order"][index]
+    case = CASES[case_idx]
+    outcome = session["outcomes"][case_idx]
+    delta = SCORE_MATRIX[(decision, outcome)]
+    krw = points_to_krw(delta)
+
+    session["score"] = session.get("score", 0) + delta
+
+    decisions = session.get("decisions", [])
+    entry = {
+        "case_id": case["id"],
+        "decision": decision,
+        "outcome": outcome,
+        "delta": delta,
+        "krw": krw,
+        "reason": None,
     }
-    for k in ("round_index", "case_id", "credit_score", "use_of_funds", "framing",
-              "purpose_label", "applicant_name", "decision", "approved_amount",
-              "reason_choice", "true_default_prob", "outcome", "points",
-              "seconds_on_round"):
-        row[k] = d.get(k)
-    s["rows"].append(row)
-    append_disk(row)
-    return jsonify({"ok": True})
+    decisions.append(entry)
+    session["decisions"] = decisions
+
+    result = dict(entry)
+    result["index"] = index
+    session["last_result"] = result
+
+    return redirect(url_for("show_reason"))
 
 
-@app.route("/api/finish", methods=["POST"])
-def api_finish():
-    d = request.get_json(silent=True) or {}
-    s = SESSIONS.get(d.get("session_id"))
-    if not s:
-        return jsonify({"ok": False}), 404
-    for row in (d.get("pending") or []):
-        if not any(r["round_index"] == row.get("round_index") for r in s["rows"]):
-            row.update({"session_id": s["session_id"], "participant_id": s["participant_id"],
-                        "language": "EN",
-                        "timestamp": datetime.now().isoformat(timespec="seconds")})
-            s["rows"].append(row)
-            append_disk(row)
-
-    rows = sorted(s["rows"], key=lambda r: r["round_index"])
-    if not rows:
-        return jsonify({"ok": False}), 400
-
-    pick = random.choice(rows)          # Random Incentivized Selection, server-side
-    s["selected_round_index"] = pick["round_index"]
-    s["total_points"] = sum(r["points"] for r in rows)
-    s["bonus_krw"] = bonus_krw(pick["points"])
-    s["finished_at"] = time.time()
-    notify_researcher(s)
-    return jsonify({
-        "ok": True,
-        "selected_round_index": pick["round_index"],
-        "applicant_name": pick["applicant_name"],
-        "decision": pick["decision"],
-        "outcome": pick["outcome"],
-        "selected_round_points": pick["points"],
-        "bonus_krw": s["bonus_krw"],
-        "total_points": s["total_points"],
-    })
+@app.route("/reason")
+def show_reason():
+    lang = session.get("lang")
+    result = session.get("last_result")
+    if not lang or not result:
+        return redirect(url_for("index"))
+    case_desc = CASES_BY_ID[result["case_id"]]["situation"][lang]
+    reason_options = [{"id": opt["id"], "label": opt[lang]} for opt in REASON_OPTIONS]
+    return render_template(
+        "reason.html",
+        lang=lang,
+        index=result["index"],
+        case_desc=case_desc,
+        total=len(CASES),
+        score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
+        reason_options=reason_options,
+    )
 
 
-def notify_researcher(s):
-    """Email the session CSV via Resend, if configured. Never blocks the result."""
-    key = os.environ.get("RESEND_API_KEY")
-    to = os.environ.get("NOTIFY_EMAIL", "hannahmohamed.sayed23@gmail.com")
-    if not (key and to):
-        return
-    try:
-        import urllib.request
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, fieldnames=CSV_COLUMNS)
-        w.writeheader()
-        for r in sorted(s["rows"], key=lambda x: x["round_index"]):
-            w.writerow({k: r.get(k, "") for k in CSV_COLUMNS})
-        body = json.dumps({
-            "from": os.environ.get("NOTIFY_FROM", "onboarding@resend.dev"),
-            "to": [to],
-            "subject": f"Loan Default Game - participant {s['participant_id']} finished",
-            "text": (f"Participant {s['participant_id']}\n"
-                     f"Total points: {s['total_points']}\n"
-                     f"Paid round: {s['selected_round_index']}\n"
-                     f"Bonus: {s['bonus_krw']} KRW\n\n{buf.getvalue()}"),
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.resend.com/emails", data=body,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=6).read()
-    except Exception:
-        pass
+@app.route("/reason", methods=["POST"])
+def submit_reason():
+    lang = session.get("lang")
+    result = session.get("last_result")
+    if not lang or not result:
+        return redirect(url_for("index"))
+
+    reason = request.form.get("reason")
+    if reason not in REASON_IDS:
+        return redirect(url_for("show_reason"))
+
+    decisions = session.get("decisions", [])
+    if decisions:
+        decisions[-1]["reason"] = reason
+        session["decisions"] = decisions
+
+    result["reason"] = reason
+    session["last_result"] = result
+
+    return redirect(url_for("show_outcome"))
 
 
-def _fmt(sec):
-    return f"{int(sec)//60}:{int(sec) % 60:02d}"
+@app.route("/outcome")
+def show_outcome():
+    lang = session.get("lang")
+    result = session.get("last_result")
+    if not lang or not result:
+        return redirect(url_for("index"))
+    if not result.get("reason"):
+        return redirect(url_for("show_reason"))
+    case_desc = CASES_BY_ID[result["case_id"]]["situation"][lang]
+    return render_template(
+        "outcome.html",
+        lang=lang,
+        result=result,
+        case_desc=case_desc,
+        total=len(CASES),
+        score=session.get("score", 0),
+        total_krw=total_krw_earned(session.get("decisions", [])),
+    )
+
+
+@app.route("/next", methods=["POST"])
+def next_case():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    session["index"] = session.get("index", 0) + 1
+    if session["index"] >= len(CASES):
+        save_session_to_csv()
+        send_session_email(
+            lang,
+            session.get("score", 0),
+            total_krw_earned(session.get("decisions", [])),
+            session.get("session_id", ""),
+            resolve_decisions(session.get("decisions", []), lang),
+        )
+        return redirect(url_for("final"))
+    return redirect(url_for("show_case"))
+
+
+@app.route("/final")
+def final():
+    lang = session.get("lang")
+    if not lang:
+        return redirect(url_for("index"))
+    decisions = session.get("decisions", [])
+    if len(decisions) < len(CASES):
+        return redirect(url_for("show_case"))
+    return render_template(
+        "final.html",
+        lang=lang,
+        decisions=resolve_decisions(decisions, lang),
+        score=session.get("score", 0),
+        total_krw=total_krw_earned(decisions),
+    )
+
+
+@app.route("/restart", methods=["POST"])
+def restart():
+    session.clear()
+    return redirect(url_for("index"))
 
 
 @app.route("/admin")
-def admin():
-    if request.args.get("key") != ADMIN_KEY:
-        return "Unauthorised", 401
-    rows = []
-    for s in sorted(SESSIONS.values(), key=lambda x: x["participant_id"]):
-        n = len(s["rows"])
-        end = s["finished_at"] or time.time()
-        secs = [r.get("seconds_on_round") or 0 for r in s["rows"]]
-        rows.append({
-            "pid": s["participant_id"], "n": n,
-            "elapsed": _fmt(end - s["started_at"]),
-            "avg": (sum(secs) / len(secs)) if secs else None,
-            "approved": sum(1 for r in s["rows"] if r.get("decision") == "Approve"),
-            "points": sum(r.get("points") or 0 for r in s["rows"]),
-            "bonus": s["bonus_krw"],
-            "status": "finished" if s["finished_at"] else ("in progress" if n else "instructions"),
-        })
-    return render_template_string(ADMIN_HTML, css=CSS, rows=rows, key=ADMIN_KEY,
-                                  total_rows=sum(r["n"] for r in rows))
+def admin_dashboard():
+    # Wrong/missing key looks identical to a route that doesn't exist.
+    if not ADMIN_KEY or request.args.get("key") != ADMIN_KEY:
+        abort(404)
 
+    rows = read_sessions_csv()
 
-@app.route("/admin/csv")
-def admin_csv():
-    if request.args.get("key") != ADMIN_KEY:
-        return "Unauthorised", 401
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=CSV_COLUMNS)
-    w.writeheader()
-    for s in sorted(SESSIONS.values(), key=lambda x: x["participant_id"]):
-        for r in sorted(s["rows"], key=lambda x: x["round_index"]):
-            w.writerow({k: r.get(k, "") for k in CSV_COLUMNS})
-    stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    return Response(
-        buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=decisions-{stamp}.csv"})
+    def to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    total_sessions = len(rows)
+    avg_krw = round(sum(to_float(r.get("total_krw")) for r in rows) / total_sessions, 1) if total_sessions else 0
+    avg_score = round(sum(to_float(r.get("total_score")) for r in rows) / total_sessions, 1) if total_sessions else 0
+
+    sessions_table = sorted(
+        (
+            {
+                "timestamp": r.get("timestamp", ""),
+                "session_id": r.get("session_id", ""),
+                "total_krw": r.get("total_krw", ""),
+                "total_score": r.get("total_score", ""),
+            }
+            for r in rows
+        ),
+        key=lambda r: r["timestamp"],
+        reverse=True,
+    )
+
+    situation_types = [s["type"] for s in SITUATIONS]
+    credit_levels = ["high", "low"]
+    crosstab = {
+        level: {stype: {"approve": 0, "total": 0} for stype in situation_types}
+        for level in credit_levels
+    }
+    reason_counts = {opt["id"]: 0 for opt in REASON_OPTIONS}
+
+    for r in rows:
+        for i in range(1, len(CASES) + 1):
+            level = r.get(f"case{i}_credit_score_level")
+            stype = r.get(f"case{i}_situation_type")
+            decision = r.get(f"case{i}_decision")
+            reason = r.get(f"case{i}_reason")
+            if level in crosstab and stype in crosstab[level]:
+                crosstab[level][stype]["total"] += 1
+                if decision == "approve":
+                    crosstab[level][stype]["approve"] += 1
+            if reason in reason_counts:
+                reason_counts[reason] += 1
+
+    crosstab_rows = []
+    for level in credit_levels:
+        cells = []
+        for stype in situation_types:
+            cell = crosstab[level][stype]
+            pct = round(100 * cell["approve"] / cell["total"], 1) if cell["total"] else None
+            cells.append({"pct": pct, "n": cell["total"]})
+        crosstab_rows.append({"level": level, "cells": cells})
+
+    reason_table = [
+        {"id": opt["id"], "label": opt["en"], "count": reason_counts[opt["id"]]}
+        for opt in REASON_OPTIONS
+    ]
+
+    return render_template(
+        "admin.html",
+        lang="en",
+        total_sessions=total_sessions,
+        avg_krw=avg_krw,
+        avg_score=avg_score,
+        sessions_table=sessions_table,
+        situation_types=situation_types,
+        crosstab_rows=crosstab_rows,
+        reason_table=reason_table,
+        approval_chart_svg=render_approval_chart(crosstab_rows, situation_types),
+        reason_chart_svg=render_reason_chart(reason_table),
+    )
 
 
 if __name__ == "__main__":
-    app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True)
