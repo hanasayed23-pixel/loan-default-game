@@ -242,7 +242,8 @@ def main():
                          f"Within-participant difference = {100*h1['statistic']:+.1f} pp, "
                          f"randomisation p = {h1['p_value']:.4f}",
                          "effect_credit_score_H1")
-    f2 = fig_main_effect(df, eff, "use_productive", ["Non-productive", "Productive"],
+    f2 = fig_main_effect(df, eff, "use_productive",
+ ["Non-productive", "Productive"],
                          "H2  Effect of the stated loan purpose on approval",
                          f"Within-participant difference = {100*h2['statistic']:+.1f} pp, "
                          f"randomisation p = {h2['p_value']:.4f}",
