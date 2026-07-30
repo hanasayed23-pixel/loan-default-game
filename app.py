@@ -251,7 +251,8 @@ START_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       <label for="pid">Your participant number</label>
       <select id="pid" name="participant_id" required autofocus>
         <option value="">&mdash; select &mdash;</option>
-        {% for p in available %}<option value="{{p}}">{{p}}</option>{% endfor %}
+        {% for p in available %}<option value="{{p}}">{{p}}</option>{%
+ endfor %}
       </select>
       <p class="muted" style="margin:7px 0 0">It is on the card at your seat.</p>
       {% if not available %}<p class="muted">All four numbers are in use. Tell the researcher.</p>{% endif %}
@@ -454,6 +455,7 @@ GAME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <section class="step" id="s-done">
   <p class="eyebrow">Session complete</p>
   <h1>The decision drawn at random</h1>
+
   <div class="card" style="padding:20px;max-width:520px">
     <p class="muted mono" id="d-line" style="margin:0 0 6px"></p>
     <p style="margin:0 0 14px" id="d-detail"></p>
@@ -524,10 +526,10 @@ function isPractice(){return idx<0;}
 function render(){
   const c=cur();
   document.getElementById('r-eyebrow').textContent =
-    isPractice() ? 'Practice application — not counted' : 'Application '+(idx+1)+' of 8';
+    isPractice() ? 'Practice application â€” not counted' : 'Application '+(idx+1)+' of 8';
   document.getElementById('prog').innerHTML =
     CASES.map((_,i)=>'<div class="pip '+(idx>i?'done':(idx===i?'now':''))+'"></div>').join('');
-  document.getElementById('r-who').textContent = c.name+' · '+c.loc;
+  document.getElementById('r-who').textContent = c.name+' Â· '+c.loc;
   document.getElementById('r-score').textContent = c.credit_score;
   document.getElementById('r-purpose').textContent = c.purpose;
 
@@ -602,16 +604,16 @@ function finish(){
     body:JSON.stringify({session_id:SID,total_points:total,pending:queue})})
     .then(r=>r.json()).then(d=>{
       document.getElementById('d-line').textContent =
-        'Application '+d.selected_round_index+' — '+d.applicant_name;
+        'Application '+d.selected_round_index+' â€” '+d.applicant_name;
       document.getElementById('d-detail').textContent =
-        d.decision+' · '+d.outcome+' · '
+        d.decision+' Â· '+d.outcome+' Â· '
         +(d.selected_round_points>0?'+':'')+d.selected_round_points+' points';
       document.getElementById('d-krw').textContent = d.bonus_krw.toLocaleString()+' KRW';
       document.getElementById('d-total').textContent = 'Total points across all 8: '+d.total_points;
       go('s-done');
     }).catch(()=>{
       go('s-done');
-      document.getElementById('d-krw').textContent='—';
+      document.getElementById('d-krw').textContent='â€”';
       document.getElementById('d-detail').textContent='Show this screen to the researcher.';
     });
 }
@@ -648,9 +650,9 @@ th{background:var(--ink);color:#fff;font-size:11px;letter-spacing:.09em;text-tra
 {% for r in rows %}<tr{% if r.avg and r.avg>75 %} class="slow"{% endif %}>
 <td class="mono">{{r.pid}}</td><td class="mono">{{r.n}} / 8</td>
 <td class="mono">{{r.elapsed}}</td>
-<td class="mono">{{ (r.avg|round(0)|int ~ ' s') if r.avg else '—' }}</td>
+<td class="mono">{{ (r.avg|round(0)|int ~ ' s') if r.avg else 'â€”' }}</td>
 <td class="mono">{{r.approved}}</td><td class="mono">{{r.points}}</td>
-<td class="mono">{{ (r.bonus ~ ' KRW') if r.bonus is not none else '—' }}</td>
+<td class="mono">{{ (r.bonus ~ ' KRW') if r.bonus is not none else 'â€”' }}</td>
 <td>{{r.status}}</td></tr>{% endfor %}
 </table>
 <hr class="rule">
@@ -675,6 +677,7 @@ def start():
             error = "That number is already in use. Please pick another."
         else:
             sid = f"S{pid}-{secrets.token_hex(3)}"
+
             SESSIONS[sid] = {
                 "session_id": sid, "participant_id": pid, "language": "EN",
                 "cases": build_cases(seed=f"{pid}{sid}"), "rows": [],
